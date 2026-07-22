@@ -21,6 +21,9 @@ public sealed class ClaudeSession
     /// <summary>세션 transcript 파일 경로.</summary>
     public string TranscriptPath { get; init; } = string.Empty;
 
+    /// <summary>세션 종류(Claude / GPT). 복구·새로 열기 명령을 종류에 맞게 분기하는 데 쓴다.</summary>
+    public TerminalKind Kind { get; init; } = TerminalKind.Claude;
+
     /// <summary>폴더 이름(cwd의 마지막 구간). 라벨용.</summary>
     public string ProjectName
     {

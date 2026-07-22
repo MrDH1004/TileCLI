@@ -34,6 +34,9 @@ public sealed class MainForm : Form
     private List<string> _gptNames = new();    // GPT CLI로 인식할 프로세스명(config.env GptProcessNames)
     private List<string> _claudeTitleMarkers = new(); // 클로드 창 제목 접두 마커
     private List<string> _gptTitleMarkers = new();    // GPT 창 제목 접두 마커
+    private string _gptSessionsDir = "";               // GPT 세션 폴더(빈값 → ~/.codex/sessions)
+    private string _gptResumeCmd = "codex --continue"; // GPT 세션 이어서 복구 명령
+    private string _gptNewCmd = "codex";               // GPT 세션 새로 열기 명령
     private List<MonitorTarget> _monitors = new();
     private List<LayoutProfile> _profiles = new();
     private LayoutDirection _currentDirection = LayoutDirection.Grid;
@@ -91,6 +94,9 @@ public sealed class MainForm : Form
         if (_claudeTitleMarkers.Count == 0) _claudeTitleMarkers = new List<string>(WindowDiscovery.DefaultClaudeTitleMarkers);
         _gptTitleMarkers = _config.GetList("GptTitleMarkers");
         if (_gptTitleMarkers.Count == 0) _gptTitleMarkers = new List<string>(WindowDiscovery.DefaultGptTitleMarkers);
+        _gptSessionsDir = _config.GetString("GptSessionsDir") ?? "";
+        var gptResume = _config.GetString("GptResumeCmd"); if (!string.IsNullOrWhiteSpace(gptResume)) _gptResumeCmd = gptResume;
+        var gptNew = _config.GetString("GptNewCmd"); if (!string.IsNullOrWhiteSpace(gptNew)) _gptNewCmd = gptNew;
         if (string.Equals(_config.GetString("Theme"), "Light", StringComparison.OrdinalIgnoreCase))
             Theme.SetMode(ThemeMode.Light);
 
@@ -656,7 +662,7 @@ public sealed class MainForm : Form
 
         var bar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
         bar.Controls.Add(new Label { Text = "최근 세션", AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Padding = new Padding(2, 8, 8, 0), Tag = "gold" });
-        bar.Controls.Add(MakeIconButton(IconKind.OpenNew, 38, (_, _) => ResumeSelectedSessions(), "선택 세션을 이어서 복구 (새 터미널, claude -c)"));
+        bar.Controls.Add(MakeIconButton(IconKind.OpenNew, 38, (_, _) => ResumeSelectedSessions(), "선택 세션 이어서 복구 (Claude=claude -c / GPT=codex, 새 터미널)"));
         bar.Controls.Add(MakeIconButton(IconKind.Refresh, 38, (_, _) => RefreshSessions(), "최근 클로드 세션 목록 새로고침"));
         // 삭제 드롭다운(앱에서 삭제 / 저장폴더 삭제)
         var btnDelete = MakeIconButton(IconKind.Delete, 38, null, "선택 세션 삭제 — 앱에서 숨김 / 저장폴더 휴지통");
@@ -694,8 +700,8 @@ public sealed class MainForm : Form
     private ContextMenuStrip BuildSessionContextMenu()
     {
         var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
-        menu.Items.Add("복구 (이어서, claude -c)", null, (_, _) => ResumeSelectedSessions());
-        menu.Items.Add("새 세션으로 열기 (claude)", null, (_, _) => LaunchNewSelectedSessions());
+        menu.Items.Add("세션 이어하기", null, (_, _) => ResumeSelectedSessions());
+        menu.Items.Add("세션 새로 하기", null, (_, _) => LaunchNewSelectedSessions());
         menu.Items.Add("탐색기에서 폴더 열기", null, (_, _) => OpenSelectedSessionFolder());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("앱에서 삭제 (목록에서 숨김)", null, (_, _) => HideSelectedSessions());
@@ -1068,15 +1074,18 @@ public sealed class MainForm : Form
 
     private void RefreshSessions()
     {
+        string? gptDir = string.IsNullOrWhiteSpace(_gptSessionsDir) ? null : _gptSessionsDir;
         List<ClaudeSession> sessions;
-        try { sessions = ClaudeSessionService.GetRecent(30, _settings.HiddenSessions); }
+        try { sessions = ClaudeSessionService.GetRecent(30, _settings.HiddenSessions, gptDir); }
         catch { sessions = new List<ClaudeSession>(); }
 
         _sessionView.BeginUpdate();
         _sessionView.Items.Clear();
         foreach (var s in sessions)
         {
-            var it = new ListViewItem(s.DisplayLabel) { Tag = s, ToolTipText = s.Cwd, ForeColor = Theme.Text };
+            // GPT 세션은 초록으로 구분(터미널 목록과 동일 컬러 규칙). Claude는 기본색.
+            var color = s.Kind == TerminalKind.Gpt ? Theme.Gpt : Theme.Text;
+            var it = new ListViewItem(s.DisplayLabel) { Tag = s, ToolTipText = $"[{(s.Kind == TerminalKind.Gpt ? "GPT" : "Claude")}] {s.Cwd}", ForeColor = color };
             it.SubItems.Add(s.Cwd);
             it.SubItems.Add(s.LastActive.ToString("yyyy-MM-dd HH:mm"));
             _sessionView.Items.Add(it);
@@ -1084,7 +1093,7 @@ public sealed class MainForm : Form
         _sessionView.EndUpdate();
         FitSessionColumns();
         if (sessions.Count == 0)
-            SetStatus("최근 클로드 세션 없음 (~/.claude/projects).");
+            SetStatus("최근 세션 없음 (Claude ~/.claude/projects · GPT ~/.codex/sessions).");
     }
 
     /// <summary>제목 열이 목록 폭을 채우도록(종류 열 제외한 나머지). ClientSize는 세로 스크롤바를 이미 제외함.</summary>
@@ -1234,27 +1243,35 @@ public sealed class MainForm : Form
 
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
-            if (ClaudeSessionService.Resume(s, out string err)) ok++; else lastErr = err;
+        {
+            // 종류별 이어서-복구 명령: Claude=claude -c, GPT=config(GptResumeCmd)
+            string cmd = s.Kind == TerminalKind.Gpt ? _gptResumeCmd : "claude -c";
+            if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err)) ok++; else lastErr = err;
+        }
 
         SetStatus(ok == sel.Count
             ? $"세션 복구 실행: {ok}개"
             : $"세션 복구: {ok}/{sel.Count}개 (실패: {lastErr})");
     }
 
-    /// <summary>선택한 세션의 폴더에서 새 클로드 세션(claude, -c 없음)을 새 터미널로 연다.</summary>
+    /// <summary>선택한 세션의 폴더에서 새 세션을 연다(Claude=claude, GPT=config 명령).</summary>
     private void LaunchNewSelectedSessions()
     {
         var sel = GetSelectedSessions();
         if (sel.Count == 0) { SetStatus("새로 열 세션(폴더)을 선택하세요."); return; }
 
         if (sel.Count > 3 && MessageBox.Show(this,
-                $"{sel.Count}개 폴더에서 각각 새 클로드 세션을 엽니다. 계속할까요?",
+                $"{sel.Count}개 폴더에서 각각 새 세션을 엽니다. 계속할까요?",
                 "새 세션으로 열기", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
             return;
 
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
-            if (ClaudeSessionService.LaunchNew(s.Cwd, out string err)) ok++; else lastErr = err;
+        {
+            // 종류별 새 세션 명령: Claude=claude, GPT=config(GptNewCmd)
+            string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : "claude";
+            if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err)) ok++; else lastErr = err;
+        }
 
         SetStatus(ok == sel.Count
             ? $"새 세션 열기: {ok}개"
@@ -1405,6 +1422,9 @@ public sealed class MainForm : Form
         _config.SetList("GptProcessNames", _gptNames);          // GPT CLI 프로세스명(편집 가능)
         _config.SetList("ClaudeTitleMarkers", _claudeTitleMarkers); // 클로드 창 제목 접두 마커
         _config.SetList("GptTitleMarkers", _gptTitleMarkers);   // GPT 창 제목 접두 마커
+        _config.SetString("GptSessionsDir", _gptSessionsDir);   // GPT 세션 폴더(빈값=~/.codex/sessions)
+        _config.SetString("GptResumeCmd", _gptResumeCmd);       // GPT 이어서 복구 명령
+        _config.SetString("GptNewCmd", _gptNewCmd);             // GPT 새 세션 명령
 
         try { _config.Save(); }
         catch (Exception ex) { SetStatus($"config.env 저장 실패: {ex.Message}"); }
@@ -1550,8 +1570,8 @@ public sealed class MainForm : Form
 
         // 열린 클로드 창 수만큼 최근 세션을 근사 연결(창↔세션 정확 매칭은 WT 단일 프로세스 한계 → 최근성 기준).
         int claudeCount = _terminals.Count(t => t.Kind == TerminalKind.Claude);
-        List<ClaudeSession> recent;
-        try { recent = ClaudeSessionService.GetRecent(claudeCount, _settings.HiddenSessions); }
+        List<ClaudeSession> recent; // 작업 세트는 Claude 창↔Claude 세션만 연결(claude -c로 재실행)
+        try { recent = ClaudeSessionService.GetRecent(claudeCount * 2 + 5, _settings.HiddenSessions).Where(s => s.Kind == TerminalKind.Claude).Take(claudeCount).ToList(); }
         catch { recent = new List<ClaudeSession>(); }
         int ri = 0;
 

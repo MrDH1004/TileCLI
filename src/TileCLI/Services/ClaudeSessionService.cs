@@ -21,36 +21,127 @@ public static class ClaudeSessionService
     /// 프로젝트별 가장 최근 세션을 LastActive 내림차순으로 최대 max개 반환.
     /// hiddenCwds에 포함된 cwd는 "앱에서 삭제"로 숨긴 것이라 제외한다.
     /// </summary>
-    public static List<ClaudeSession> GetRecent(int max = 20, IEnumerable<string>? hiddenCwds = null)
+    /// <summary>GPT CLI 세션 루트(~/.codex/sessions). config(GptSessionsDir)로 덮어쓸 수 있음.</summary>
+    public static string GptSessionsRoot =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+
+    /// <summary>
+    /// Claude(~/.claude/projects) + GPT(gptSessionsDir, 기본 ~/.codex/sessions) 최근 세션을
+    /// cwd별 최신 1개씩 추려 LastActive 내림차순 최대 max개 반환. hiddenCwds는 제외.
+    /// </summary>
+    public static List<ClaudeSession> GetRecent(int max = 20, IEnumerable<string>? hiddenCwds = null, string? gptSessionsDir = null)
+    {
+        var hidden = new HashSet<string>(hiddenCwds ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        var all = new List<ClaudeSession>();
+        all.AddRange(ScanClaude(hidden));
+        all.AddRange(ScanGpt(gptSessionsDir, hidden));
+        all.Sort((a, b) => b.LastActive.CompareTo(a.LastActive));
+        if (all.Count > max) all.RemoveRange(max, all.Count - max);
+        return all;
+    }
+
+    /// <summary>~/.claude/projects 스캔(cwd별 최신 1개, Kind=Claude).</summary>
+    private static List<ClaudeSession> ScanClaude(HashSet<string> hidden)
     {
         var result = new List<ClaudeSession>();
         string root = ProjectsRoot;
         if (!Directory.Exists(root)) return result;
 
-        var hidden = new HashSet<string>(hiddenCwds ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-
-        // cwd 기준으로 가장 최근 세션 1개만 유지
         var byCwd = new Dictionary<string, ClaudeSession>(StringComparer.OrdinalIgnoreCase);
-
         foreach (var dir in SafeEnumerateDirectories(root))
         {
             var newest = NewestTranscript(dir);
             if (newest is null) continue;
-
             var session = Parse(newest, dir);
             if (session is null) continue;
-
             string key = string.IsNullOrWhiteSpace(session.Cwd) ? dir : session.Cwd;
-            if (hidden.Contains(key)) continue; // 숨긴 세션 제외
-
+            if (hidden.Contains(key)) continue;
             if (!byCwd.TryGetValue(key, out var existing) || session.LastActive > existing.LastActive)
                 byCwd[key] = session;
         }
-
         result.AddRange(byCwd.Values);
-        result.Sort((a, b) => b.LastActive.CompareTo(a.LastActive));
-        if (result.Count > max) result.RemoveRange(max, result.Count - max);
         return result;
+    }
+
+    /// <summary>GPT 세션 디렉토리 재귀 스캔(*.jsonl에서 cwd 탐색, cwd별 최신 1개, Kind=Gpt).</summary>
+    private static List<ClaudeSession> ScanGpt(string? dir, HashSet<string> hidden)
+    {
+        var result = new List<ClaudeSession>();
+        string root = string.IsNullOrWhiteSpace(dir) ? GptSessionsRoot : dir!;
+        if (!Directory.Exists(root)) return result;
+
+        IEnumerable<string> files;
+        try { files = Directory.EnumerateFiles(root, "*.jsonl", SearchOption.AllDirectories); }
+        catch { return result; }
+
+        var byCwd = new Dictionary<string, ClaudeSession>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            string? cwd; DateTime last;
+            try { var fi = new FileInfo(file); cwd = FindCwd(fi); last = fi.LastWriteTime; }
+            catch { continue; }
+            if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) continue;
+            if (hidden.Contains(cwd)) continue;
+
+            var s = new ClaudeSession
+            {
+                SessionId = Path.GetFileNameWithoutExtension(file),
+                Cwd = cwd,
+                LastActive = last,
+                TranscriptPath = file,
+                Kind = TerminalKind.Gpt
+            };
+            if (!byCwd.TryGetValue(cwd, out var ex) || s.LastActive > ex.LastActive) byCwd[cwd] = s;
+        }
+        result.AddRange(byCwd.Values);
+        return result;
+    }
+
+    /// <summary>jsonl 앞부분(최대 MaxLinesToScan줄)에서 "cwd" 문자열 속성을 재귀 탐색(CLI 형식 무관).</summary>
+    private static string? FindCwd(FileInfo file)
+    {
+        try
+        {
+            int n = 0;
+            foreach (var line in File.ReadLines(file.FullName))
+            {
+                if (++n > MaxLinesToScan) break;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var cwd = FindCwdIn(doc.RootElement);
+                    if (!string.IsNullOrWhiteSpace(cwd)) return cwd;
+                }
+                catch { /* 라인 파싱 실패 무시 */ }
+            }
+        }
+        catch { /* 파일 읽기 실패 */ }
+        return null;
+    }
+
+    private static string? FindCwdIn(JsonElement el)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var p in el.EnumerateObject())
+                {
+                    if (p.NameEquals("cwd") && p.Value.ValueKind == JsonValueKind.String)
+                        return p.Value.GetString();
+                    var r = FindCwdIn(p.Value);
+                    if (r is not null) return r;
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in el.EnumerateArray())
+                {
+                    var r = FindCwdIn(item);
+                    if (r is not null) return r;
+                }
+                break;
+        }
+        return null;
     }
 
     /// <summary>세션이 저장된 폴더(~/.claude/projects/&lt;encoded&gt;). 없으면 null.</summary>
@@ -198,20 +289,20 @@ public static class ClaudeSessionService
         catch (Exception ex) { error = ex.Message; return false; }
     }
 
-    /// <summary>기존 세션 이어서 복구(claude -c).</summary>
+    /// <summary>기존 Claude 세션 이어서 복구(claude -c).</summary>
     public static bool Resume(ClaudeSession session, out string error) =>
-        Launch(session?.Cwd, resume: true, out error);
+        LaunchCommand(session?.Cwd, "claude -c", out error);
 
-    /// <summary>해당 폴더에서 새 클로드 세션 시작(claude, -c 없음).</summary>
+    /// <summary>해당 폴더에서 새 Claude 세션 시작(claude, -c 없음).</summary>
     public static bool LaunchNew(string? cwd, out string error) =>
-        Launch(cwd, resume: false, out error);
+        LaunchCommand(cwd, "claude", out error);
 
     /// <summary>
-    /// cwd에서 새 터미널로 claude 실행. resume=true면 이어서(claude -c), false면 새 세션(claude).
+    /// cwd에서 새 터미널로 임의 CLI 명령을 실행한다(예: "claude -c" / "codex --continue" / "codex").
     /// 정리된 환경(CLAUDECODE 등 제거 + 컬러 힌트)으로 띄워 색상이 정상 출력된다.
-    /// wt.exe 우선, 실패 시 cmd.exe 폴백.
+    /// wt.exe -d &lt;cwd&gt; cmd /k &lt;command&gt; 우선, 실패 시 cmd.exe 폴백.
     /// </summary>
-    private static bool Launch(string? cwd, bool resume, out string error)
+    public static bool LaunchCommand(string? cwd, string command, out string error)
     {
         error = string.Empty;
         if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd))
@@ -219,7 +310,7 @@ public static class ClaudeSessionService
             error = $"작업 폴더를 찾을 수 없습니다: {cwd}";
             return false;
         }
-        string claudeCmd = resume ? "claude -c" : "claude";
+        if (string.IsNullOrWhiteSpace(command)) { error = "실행할 명령이 비어 있습니다."; return false; }
 
         // 1순위: Windows Terminal (정리된 환경으로 CreateProcess)
         try
@@ -227,7 +318,7 @@ public static class ClaudeSessionService
             var psi = new ProcessStartInfo
             {
                 FileName = "wt.exe",
-                Arguments = $"-d \"{cwd}\" cmd /k {claudeCmd}",
+                Arguments = $"-d \"{cwd}\" cmd /k {command}",
                 UseShellExecute = false,   // 환경변수를 제어하려면 false 필요
                 WorkingDirectory = cwd
             };
@@ -243,7 +334,7 @@ public static class ClaudeSessionService
             var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/k {claudeCmd}",
+                Arguments = $"/k {command}",
                 UseShellExecute = false,
                 WorkingDirectory = cwd
             };

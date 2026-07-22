@@ -300,7 +300,29 @@ internal static class SelfTest
         }
         Out($"[planner] decision {(planFail == 0 ? "ok" : "FAIL")}");
 
-        bool pass = failures == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0;
+        // 8) GPT 세션 스캔(임시 디렉토리 + 가짜 rollout jsonl에서 cwd 재귀 탐색, Kind=Gpt)
+        int gptFail = 0;
+        try
+        {
+            string tmpRoot = Path.Combine(Path.GetTempPath(), $"tilecli_gpt_{Environment.ProcessId}");
+            string cwd = AppContext.BaseDirectory.TrimEnd('\\', '/'); // 존재하는 폴더
+            string sub = Path.Combine(tmpRoot, "2026", "07", "22");
+            Directory.CreateDirectory(sub);
+            File.WriteAllText(Path.Combine(sub, "rollout-test.jsonl"),
+                "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"" + cwd.Replace("\\", "\\\\") + "\"}}\n");
+            try
+            {
+                var list = ClaudeSessionService.GetRecent(100, null, tmpRoot);
+                bool found = list.Any(s => s.Kind == Models.TerminalKind.Gpt
+                    && string.Equals(s.Cwd.TrimEnd('\\', '/'), cwd, StringComparison.OrdinalIgnoreCase));
+                if (!found) { gptFail++; Out("  FAIL [gpt-session] rollout jsonl의 cwd를 스캔하지 못함"); }
+            }
+            finally { try { Directory.Delete(tmpRoot, true); } catch { } }
+        }
+        catch (Exception ex) { gptFail++; Out($"  FAIL [gpt-session] {ex.Message}"); }
+        Out($"[gpt-session] scan {(gptFail == 0 ? "ok" : "FAIL")}");
+
+        bool pass = failures == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0;
         Out(pass ? "RESULT: PASS" : "RESULT: FAIL");
 
         // 콘솔 캡처가 불확실하므로 결과를 파일로도 남김
