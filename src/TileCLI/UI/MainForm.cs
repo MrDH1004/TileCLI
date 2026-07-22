@@ -364,13 +364,90 @@ public sealed class MainForm : Form
         _listView.MouseUp += OnTerminalListMouseUp;
         _listView.MouseCaptureChanged += (_, _) => { if (_dragActive) CancelDrag(); };
         _listView.KeyDown += (_, e) => { if (_dragActive && e.KeyCode == Keys.Escape) { CancelDrag(); e.Handled = true; } };
+        _listView.ContextMenuStrip = BuildTerminalContextMenu();
         return _listView;
+    }
+
+    /// <summary>터미널 목록 우클릭 메뉴: 선택 창 강제 종료.</summary>
+    private ContextMenuStrip BuildTerminalContextMenu()
+    {
+        var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
+        menu.Items.Add("강제 종료", null, (_, _) => ForceKillSelectedTerminals());
+        return menu;
+    }
+
+    /// <summary>목록에서 선택(하이라이트)된 터미널들.</summary>
+    private List<TerminalWindow> GetSelectedTerminals()
+    {
+        var byHandle = _terminals.ToDictionary(t => t.Handle);
+        var list = new List<TerminalWindow>();
+        foreach (ListViewItem it in _listView.SelectedItems)
+            if (it.Tag is IntPtr h && byHandle.TryGetValue(h, out var t)) list.Add(t);
+        return list;
+    }
+
+    /// <summary>
+    /// 선택 터미널을 강제 종료. Windows Terminal처럼 여러 창이 한 프로세스를 공유하면
+    /// 프로세스 kill이 다른 창까지 죽이므로 창별 WM_CLOSE로 닫고, 프로세스가 분리된
+    /// 클래식 콘솔은 프로세스를 강제 종료한다.
+    /// </summary>
+    private void ForceKillSelectedTerminals()
+    {
+        var sel = GetSelectedTerminals();
+        if (sel.Count == 0) { SetStatus("강제 종료할 터미널을 선택하세요."); return; }
+
+        if (MessageBox.Show(this,
+                $"선택한 터미널 {sel.Count}개를 강제 종료합니다.\n저장하지 않은 작업은 사라집니다. 계속할까요?",
+                "강제 종료", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+            return;
+
+        int ok = 0; string? lastErr = null;
+        foreach (var t in sel)
+        {
+            try
+            {
+                bool sharedProc = _terminals.Count(x => x.ProcessId == t.ProcessId) > 1
+                                  || t.ProcessName.Equals("WindowsTerminal", StringComparison.OrdinalIgnoreCase)
+                                  || t.ProcessName.Equals("wt", StringComparison.OrdinalIgnoreCase);
+                if (sharedProc)
+                {
+                    // 공유 프로세스(WT) → 이 창만 닫음(다른 창 보호)
+                    if (NativeMethods.PostMessage(t.Handle, NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero)) ok++;
+                }
+                else
+                {
+                    // 프로세스 분리 콘솔 → 프로세스 강제 종료
+                    using var p = System.Diagnostics.Process.GetProcessById((int)t.ProcessId);
+                    p.Kill();
+                    ok++;
+                }
+            }
+            catch (Exception ex) { lastErr = ex.Message; }
+        }
+
+        // 창이 닫히는 데 약간 걸릴 수 있어 잠깐 뒤 목록 갱신
+        var refresh = new System.Windows.Forms.Timer { Interval = 500 };
+        refresh.Tick += (_, _) => { refresh.Stop(); refresh.Dispose(); if (!IsDisposed) RefreshList(); };
+        refresh.Start();
+
+        SetStatus(lastErr is null ? $"강제 종료: {ok}/{sel.Count}개" : $"강제 종료: {ok}/{sel.Count}개 (일부 실패: {lastErr})");
     }
 
     // ---- 목록 드래그 재정렬(게임 인벤토리 스타일) ----
 
     private void OnTerminalListMouseDown(object? sender, MouseEventArgs e)
     {
+        if (e.Button == MouseButtons.Right)
+        {
+            // 우클릭한 행을 선택(이미 다중 선택에 포함된 경우는 유지) → 컨텍스트 메뉴 대상 확정
+            var rh = _listView.HitTest(e.Location);
+            if (rh.Item is not null && !rh.Item.Selected)
+            {
+                _listView.SelectedItems.Clear();
+                rh.Item.Selected = true;
+            }
+            return;
+        }
         if (e.Button != MouseButtons.Left) return;
         var hit = _listView.HitTest(e.Location);
         if (hit.Item is null) return;
@@ -841,7 +918,7 @@ public sealed class MainForm : Form
         {
             Text = "TileCLI",
             Icon = TryGetAppIcon(),
-            Visible = false,
+            Visible = true,   // 창 표시 여부와 무관하게 트레이 아이콘은 항상 유지
             ContextMenuStrip = menu
         };
         _tray.DoubleClick += (_, _) => RestoreFromTray();
@@ -891,7 +968,7 @@ public sealed class MainForm : Form
         WindowState = FormWindowState.Normal;
         Activate();
         BringToFront();
-        if (_tray is not null) _tray.Visible = false;
+        // 트레이 아이콘은 창을 열어도 숨기지 않고 항상 유지한다.
     }
 
     private void ExitApp()
