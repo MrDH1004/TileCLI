@@ -1,0 +1,26 @@
+# ---- Build output ----
+[Bb]in/
+[Oo]bj/
+
+# ---- IDE / editor ----
+.vs/
+.idea/
+*.user
+*.suo
+
+# ---- TileCLI runtime state (personal paths / session data) ----
+config.env
+worksets.json
+profiles.json
+settings.json
+
+# ---- Test / diagnostic output ----
+selftest-result.txt
+uitest-result.txt
+uidump.txt
+
+# ---- OMC operational state ----
+.omc/
+
+# ---- Machine-specific (contains personal absolute paths) ----
+claude-resume-context-menu-*.reg
