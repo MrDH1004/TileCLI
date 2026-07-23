@@ -162,8 +162,9 @@ public static class TilingEngine
             if (NativeMethods.IsIconic(hWnd) || IsMaximized(hWnd))
                 NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
 
-            // 창 모서리를 각지게(사각) — 타일 창을 깔끔하게 붙임
+            // 창 모서리를 각지게(사각) + 프레임 보더를 어둡게 — 상단/타일 사이 1px 밝은 줄 제거
             NativeMethods.SetSquareCorners(hWnd, true);
+            NativeMethods.SetDarkFrameBorder(hWnd, true);
 
             Rectangle cell = cells[i];
             if (cell.Width <= 0 || cell.Height <= 0) continue; // 극단적으로 작은 영역의 0크기 셀 방어
@@ -213,6 +214,7 @@ public static class TilingEngine
             NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
 
         NativeMethods.SetSquareCorners(hWnd, true); // 연동 리사이즈 후에도 각진 모서리 유지
+        NativeMethods.SetDarkFrameBorder(hWnd, true); // 프레임 보더 어둡게(1px 밝은 줄 방지)
 
         Rectangle target = CompensateBorders(hWnd, cell);
         return NativeMethods.SetWindowPos(hWnd, IntPtr.Zero,

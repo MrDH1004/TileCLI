@@ -72,6 +72,7 @@ public sealed class MainForm : Form
     private ComboBox _cboWorkSets = null!;
     private CheckBox _chkWatch = null!;
     private readonly WindowWatcher _watcher = new();
+    private System.Windows.Forms.Timer? _titleSync;   // 터미널 제목 실시간 동기화(제자리 텍스트 갱신)
     private bool _watchMode;
     private int _suppressWatchUntil;                 // 이 tick 전까지 감시 재배치 억제(우리 이동 루프 방지)
 
@@ -143,6 +144,11 @@ public sealed class MainForm : Form
             // 감시 모드: 새 창 표시/파괴 감지 → 디바운스 후 자동 재배치
             _watcher.Changed += OnWatcherChanged;
 
+            // 터미널 제목 실시간 동기화(클로드가 제목을 계속 바꾸므로 목록 텍스트만 제자리 갱신)
+            _titleSync = new System.Windows.Forms.Timer { Interval = 1500 };
+            _titleSync.Tick += (_, _) => SyncTerminalTitles();
+            _titleSync.Start();
+
             // 자동 실행이 켜져 있는데 등록 경로가 현재 exe와 다르면 현재 경로로 갱신(경로 변경 대응)
             if (AutoStartService.RefreshIfEnabled())
                 SetStatus($"자동 실행 경로 갱신됨 — {AutoStartService.CurrentExePath()}");
@@ -154,6 +160,7 @@ public sealed class MainForm : Form
             _groupTracker.Dispose();
             _watcher.Dispose();
             _restoreTimer?.Dispose();
+            _titleSync?.Dispose();
             if (_tray is not null) { _tray.Visible = false; _tray.Dispose(); }
         };
     }
@@ -1096,6 +1103,23 @@ public sealed class MainForm : Form
             SetStatus("최근 세션 없음 (Claude ~/.claude/projects · GPT ~/.codex/sessions).");
     }
 
+    /// <summary>
+    /// 터미널 목록 제목을 실제 창 제목과 동기화(제자리 텍스트만 갱신 — 체크·선택·스크롤 보존).
+    /// 클로드가 작업 중 창 제목을 계속 바꾸므로(/rename 포함) 목록이 스테일해지는 것을 방지한다.
+    /// </summary>
+    private void SyncTerminalTitles()
+    {
+        if (IsDisposed || _dragActive || _listView.Items.Count == 0) return;
+        foreach (ListViewItem it in _listView.Items)
+        {
+            if (it.Tag is not IntPtr h || !NativeMethods.IsWindow(h)) continue;
+            string title = NativeMethods.GetWindowTitle(h);
+            if (string.IsNullOrWhiteSpace(title)) continue;      // 빈 제목은 기존 표시 유지
+            if (!string.Equals(it.Text, title, StringComparison.Ordinal))
+                it.Text = title;
+        }
+    }
+
     /// <summary>제목 열이 목록 폭을 채우도록(종류 열 제외한 나머지). ClientSize는 세로 스크롤바를 이미 제외함.</summary>
     private void FitTerminalColumns()
     {
@@ -1244,9 +1268,10 @@ public sealed class MainForm : Form
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
         {
-            // 종류별 이어서-복구 명령: Claude=claude -c(+/rename 타이틀), GPT=config(GptResumeCmd)
-            string cmd = s.Kind == TerminalKind.Gpt ? _gptResumeCmd : BuildClaudeCommand(resume: true, s);
-            if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err)) ok++; else lastErr = err;
+            // 종류별 이어서-복구 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
+            string cmd = s.Kind == TerminalKind.Gpt ? _gptResumeCmd : "claude -c";
+            string? title = s.Kind == TerminalKind.Gpt ? null : "✳ " + SessionWindowTitle(s);
+            if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
 
         SetStatus(ok == sel.Count
@@ -1268,9 +1293,10 @@ public sealed class MainForm : Form
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
         {
-            // 종류별 새 세션 명령: Claude=claude(+/rename 타이틀), GPT=config(GptNewCmd)
-            string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : BuildClaudeCommand(resume: false, s);
-            if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err)) ok++; else lastErr = err;
+            // 종류별 새 세션 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
+            string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : "claude";
+            string? title = s.Kind == TerminalKind.Gpt ? null : "✳ " + SessionWindowTitle(s);
+            if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
 
         SetStatus(ok == sel.Count
@@ -1285,17 +1311,6 @@ public sealed class MainForm : Form
     {
         string name = ClaudeSessionService.TryGetRepoName(s.Cwd) ?? s.ProjectName;
         return name.Replace("\"", "").Trim(); // 따옴표 제거(명령 인용 안전)
-    }
-
-    /// <summary>
-    /// Claude 실행 명령. 첫 입력으로 "/rename &lt;타이틀&gt;"을 넘겨 세션(터미널 타이틀) 이름을
-    /// 저장소/폴더 이름으로 바꾼다. resume=true면 claude -c, 아니면 claude.
-    /// </summary>
-    private static string BuildClaudeCommand(bool resume, ClaudeSession s)
-    {
-        string baseCmd = resume ? "claude -c" : "claude";
-        string title = SessionWindowTitle(s);
-        return string.IsNullOrWhiteSpace(title) ? baseCmd : $"{baseCmd} \"/rename {title}\"";
     }
 
     /// <summary>선택 세션의 작업 폴더(cwd)를 파일 탐색기로 연다.</summary>
@@ -1681,8 +1696,8 @@ public sealed class MainForm : Form
         foreach (var slot in pending)
         {
             var sess = new ClaudeSession { Cwd = slot.Cwd, SessionId = slot.SessionId };
-            // 재실행 시에도 터미널 타이틀을 저장소/폴더 이름으로(/rename)
-            if (ClaudeSessionService.LaunchCommand(slot.Cwd, BuildClaudeCommand(resume: true, sess), out string err)) launched++; else lastErr = err;
+            // 재실행 시에도 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음)
+            if (ClaudeSessionService.LaunchCommand(slot.Cwd, "claude -c", out string err, "✳ " + SessionWindowTitle(sess))) launched++; else lastErr = err;
         }
         SetStatus(launched > 0
             ? $"작업 세트 '{name}': 이동 {placedBase}개 + 세션 {launched}개 재실행 중… (창 뜨면 자동 배치)"

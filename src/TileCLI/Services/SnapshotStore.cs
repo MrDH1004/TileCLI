@@ -40,6 +40,7 @@ public sealed class SnapshotStore
             if (NativeMethods.SetWindowPlacement(kv.Key, ref wp))
             {
                 NativeMethods.SetSquareCorners(kv.Key, false); // 정렬 취소 → 둥근 모서리 복원
+                NativeMethods.SetDarkFrameBorder(kv.Key, false); // 프레임 보더도 기본으로 원복
                 restored++;
             }
         }

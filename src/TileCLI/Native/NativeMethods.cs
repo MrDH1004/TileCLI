@@ -295,4 +295,20 @@ internal static class NativeMethods
         try { DwmSetWindowAttribute(hWnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int)); }
         catch { /* 미지원 OS 무시 */ }
     }
+
+    // Win11 창 프레임 보더(상단 1px 라인) 색. 밝은 기본 보더가 화면 상단·타일 사이에서 1px '틈'처럼 보인다.
+    public const int DWMWA_BORDER_COLOR = 34;
+    private const int BorderDarkColor = 0x002E2E2E;                 // COLORREF RGB(46,46,46) — 다크 터미널과 동화
+    private static readonly int BorderDefaultColor = unchecked((int)0xFFFFFFFF); // DWMWA_COLOR_DEFAULT
+
+    /// <summary>
+    /// 타일 창의 1px 프레임 보더를 어두운 색으로(dark=true) 바꿔 화면 가장자리·인접 타일과 붙어 보이게 한다.
+    /// dark=false면 기본 보더로 원복. (NONE으로 제거하면 그 줄이 투명해져 배경이 비치므로 색 동화가 정답)
+    /// </summary>
+    public static void SetDarkFrameBorder(IntPtr hWnd, bool dark)
+    {
+        int v = dark ? BorderDarkColor : BorderDefaultColor;
+        try { DwmSetWindowAttribute(hWnd, DWMWA_BORDER_COLOR, ref v, sizeof(int)); }
+        catch { /* 미지원 OS 무시 */ }
+    }
 }

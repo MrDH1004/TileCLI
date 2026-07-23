@@ -335,8 +335,10 @@ public static class ClaudeSessionService
     /// cwd에서 새 터미널로 임의 CLI 명령을 실행한다(예: "claude -c" / "codex --continue" / "codex").
     /// 정리된 환경(CLAUDECODE 등 제거 + 컬러 힌트)으로 띄워 색상이 정상 출력된다.
     /// wt.exe -d &lt;cwd&gt; cmd /k &lt;command&gt; 우선, 실패 시 cmd.exe 폴백.
+    /// title을 주면 WT 탭 제목을 그 이름으로 고정한다(--title + --suppressApplicationTitle).
+    /// 앱이 제목을 덮어쓰지 못하므로 세션 이름/배지(/rename)와 무관하게 터미널 타이틀만 바뀐다.
     /// </summary>
-    public static bool LaunchCommand(string? cwd, string command, out string error)
+    public static bool LaunchCommand(string? cwd, string command, out string error, string? title = null)
     {
         error = string.Empty;
         if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd))
@@ -346,13 +348,17 @@ public static class ClaudeSessionService
         }
         if (string.IsNullOrWhiteSpace(command)) { error = "실행할 명령이 비어 있습니다."; return false; }
 
+        string titleArgs = string.IsNullOrWhiteSpace(title)
+            ? string.Empty
+            : $"--title \"{title.Replace("\"", "")}\" --suppressApplicationTitle ";
+
         // 1순위: Windows Terminal (정리된 환경으로 CreateProcess)
         try
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "wt.exe",
-                Arguments = $"-d \"{cwd}\" cmd /k {command}",
+                Arguments = $"-d \"{cwd}\" {titleArgs}cmd /k {command}",
                 UseShellExecute = false,   // 환경변수를 제어하려면 false 필요
                 WorkingDirectory = cwd
             };
@@ -362,13 +368,16 @@ public static class ClaudeSessionService
         }
         catch { /* wt 실행 불가 → 폴백 */ }
 
-        // 폴백: cmd 새 창 (정리된 환경)
+        // 폴백: cmd 새 창 (정리된 환경, 제목은 best-effort — 앱이 덮어쓸 수 있음)
         try
         {
+            string cmdArgs = string.IsNullOrWhiteSpace(title)
+                ? $"/k {command}"
+                : $"/k title {title.Replace("\"", "")} & {command}";
             var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/k {command}",
+                Arguments = cmdArgs,
                 UseShellExecute = false,
                 WorkingDirectory = cwd
             };
