@@ -76,13 +76,19 @@ public sealed class MainForm : Form
     private bool _watchMode;
     private int _suppressWatchUntil;                 // 이 tick 전까지 감시 재배치 억제(우리 이동 루프 방지)
 
-    // 작업 세트 적용 시 닫힌 세션 재실행 → 새 창이 뜨는 대로 저장 위치에 배치(비동기 폴링)
+    // 작업 세트 적용 시 닫힌 세션 재실행 — 순차(한 번에 하나) 실행/배치.
+    // 동시에 여러 개를 띄우면 일부 창의 한글(IME) 입력이 깨지므로, 창이 뜨고 안정화된 뒤 배치하고 다음을 실행한다.
     private System.Windows.Forms.Timer? _restoreTimer;
-    private List<WorkSetWindow>? _restorePending;    // 아직 배치 안 된 재실행 슬롯(순서)
-    private HashSet<long>? _restoreBaseline;          // 재실행 직전 존재하던 터미널 핸들(id)
-    private int _restoreDeadline;
-    private int _restorePlacedBase;                  // 재실행 전 이미 이동한 창 수
-    private int _restorePendingInit;                 // 재실행 대상 초기 개수
+    private List<WorkSetWindow>? _restorePending;     // 아직 실행 안 한 재실행 슬롯(순서)
+    private HashSet<long>? _restoreBaseline;           // 기존 터미널 핸들(id) — 새 창 판별 기준
+    private WorkSetWindow? _restoreAwaitSlot;          // 실행했고 창 출현을 기다리는 슬롯
+    private long _restoreCandidate;                    // 출현한 새 창(안정화 대기 중, 0=없음)
+    private int _restoreCandidateTick;                 // 새 창 출현 시각
+    private int _restoreAwaitStartTick;                // 슬롯 실행 시각(슬롯별 타임아웃)
+    private int _restorePlacedBase;                    // 재실행 전 이미 이동한 창 수
+    private int _restoreDone;                          // 재실행 배치 완료 수
+    private int _restoreMissed;                        // 실행 실패/창 미출현 수
+    private string? _restoreLastErr;
     private string _restoreName = "";
 
     public MainForm()
@@ -1681,28 +1687,24 @@ public sealed class MainForm : Form
         BeginRestoreSessions(ws.Name, toLaunch, placed);
     }
 
-    /// <summary>닫힌 세션 슬롯들을 claude -c로 재실행하고, 새 창이 뜨는 대로 저장 위치에 배치(폴링).</summary>
+    /// <summary>
+    /// 닫힌 세션 슬롯들을 "순차"로 재실행/배치한다. 여러 개를 동시에 띄우면 일부 창의
+    /// 한글(IME) 입력이 깨지므로: 하나 실행 → 창 출현 → 잠깐 안정화 → 배치 → 다음 실행.
+    /// </summary>
     private void BeginRestoreSessions(string name, List<WorkSetWindow> pending, int placedBase)
     {
         _restoreBaseline = _terminals.Select(t => t.Handle.ToInt64()).ToHashSet();
         _restorePending = new List<WorkSetWindow>(pending);
-        _restorePendingInit = pending.Count;
         _restorePlacedBase = placedBase;
         _restoreName = name;
-        _restoreDeadline = Environment.TickCount + 12000; // 최대 12초 대기
-        _suppressWatchUntil = _restoreDeadline;
+        _restoreAwaitSlot = null;
+        _restoreCandidate = 0;
+        _restoreDone = 0;
+        _restoreMissed = 0;
+        _restoreLastErr = null;
+        _suppressWatchUntil = Environment.TickCount + 5000;
 
-        int launched = 0; string? lastErr = null;
-        foreach (var slot in pending)
-        {
-            var sess = new ClaudeSession { Cwd = slot.Cwd, SessionId = slot.SessionId };
-            // 재실행 시에도 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음)
-            if (ClaudeSessionService.LaunchCommand(slot.Cwd, "claude -c", out string err, "✳ " + SessionWindowTitle(sess))) launched++; else lastErr = err;
-        }
-        SetStatus(launched > 0
-            ? $"작업 세트 '{name}': 이동 {placedBase}개 + 세션 {launched}개 재실행 중… (창 뜨면 자동 배치)"
-            : $"작업 세트 '{name}': 세션 재실행 실패 — {lastErr}");
-
+        SetStatus($"작업 세트 '{name}': 이동 {placedBase}개 + 세션 {pending.Count}개 순차 재실행 중…");
         _restoreTimer ??= CreateRestoreTimer();
         _restoreTimer.Stop();
         _restoreTimer.Start();
@@ -1715,39 +1717,71 @@ public sealed class MainForm : Form
         return t;
     }
 
-    /// <summary>재실행으로 새로 뜬 터미널을 순서대로 대기 슬롯에 배치. 모두 배치 or 마감시각 초과 시 종료.</summary>
+    /// <summary>순차 재실행 상태기계: 실행 → 새 창 출현 대기(슬롯당 8초) → 안정화(0.7초) → 배치 → 다음.</summary>
     private void RestoreTick()
     {
         if (_restorePending is null || _restoreBaseline is null) { _restoreTimer?.Stop(); return; }
         _suppressWatchUntil = Environment.TickCount + 3000; // 배치 중 감시 억제 연장
 
-        List<TerminalWindow> found;
-        try { found = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers); }
-        catch { return; }
-
-        // 새로 뜬 창(기준선에 없던 것)을 순서대로 대기 슬롯에 배치(TakeNewWindows가 baseline에 추가 → 재사용 방지)
-        var currentIds = found.Select(t => t.Handle.ToInt64()).ToList();
-        var newIds = WorkSetPlanner.TakeNewWindows(_restoreBaseline, currentIds, _restorePending.Count);
-        foreach (var id in newIds)
+        // 1) 대기 중 슬롯이 없으면 다음 슬롯 실행(순차 — 동시 실행은 IME 초기화가 깨지는 창을 만든다)
+        if (_restoreAwaitSlot is null)
         {
-            var slot = _restorePending[0];
+            if (_restorePending.Count == 0) { FinishRestore(); return; }
+            _restoreAwaitSlot = _restorePending[0];
             _restorePending.RemoveAt(0);
-            TilingEngine.MoveWindowVisible(new IntPtr(id), new Rectangle(slot.X, slot.Y, slot.W, slot.H));
+            _restoreCandidate = 0;
+            _restoreAwaitStartTick = Environment.TickCount;
+            var sess = new ClaudeSession { Cwd = _restoreAwaitSlot.Cwd, SessionId = _restoreAwaitSlot.SessionId };
+            if (!ClaudeSessionService.LaunchCommand(_restoreAwaitSlot.Cwd, "claude -c", out string err, "✳ " + SessionWindowTitle(sess)))
+            {
+                _restoreLastErr = err;
+                _restoreMissed++;
+                _restoreAwaitSlot = null; // 실행 실패 → 다음 슬롯
+            }
+            return;
         }
 
-        if (_restorePending.Count == 0 || Environment.TickCount > _restoreDeadline)
+        // 2) 새 창 출현 대기(기준선에 없던 창. TakeNewWindows가 baseline에 등록 → 재사용 방지)
+        if (_restoreCandidate == 0)
         {
-            _restoreTimer?.Stop();
-            int restored = _restorePendingInit - _restorePending.Count;
-            int waiting = _restorePending.Count;
-            _restorePending = null;
-            _restoreBaseline = null;
-            _suppressWatchUntil = Environment.TickCount + 1500;
-            RefreshList();
-            SetStatus(waiting == 0
-                ? $"작업 세트 적용 완료: '{_restoreName}' — 이동 {_restorePlacedBase}개 + 재실행 배치 {restored}개."
-                : $"작업 세트 적용: '{_restoreName}' — 이동 {_restorePlacedBase}개 + 재실행 배치 {restored}개 (미출현 {waiting}개는 시간초과).");
+            List<TerminalWindow> found;
+            try { found = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers); }
+            catch { return; }
+            var newIds = WorkSetPlanner.TakeNewWindows(_restoreBaseline, found.Select(t => t.Handle.ToInt64()).ToList(), 1);
+            if (newIds.Count > 0)
+            {
+                _restoreCandidate = newIds[0];
+                _restoreCandidateTick = Environment.TickCount;
+            }
+            else if (Environment.TickCount - _restoreAwaitStartTick > 8000)
+            {
+                _restoreMissed++;      // 창 미출현(타임아웃) → 다음 슬롯
+                _restoreAwaitSlot = null;
+            }
+            return;
         }
+
+        // 3) 출현 후 잠깐 안정화(IME 초기화 보호) 뒤 배치 → 다음 슬롯으로
+        if (Environment.TickCount - _restoreCandidateTick < 700) return;
+        var slot = _restoreAwaitSlot;
+        TilingEngine.MoveWindowVisible(new IntPtr(_restoreCandidate), new Rectangle(slot.X, slot.Y, slot.W, slot.H));
+        _restoreDone++;
+        _restoreAwaitSlot = null;
+        _restoreCandidate = 0;
+    }
+
+    /// <summary>순차 재실행 종료: 상태 정리 + 결과 보고.</summary>
+    private void FinishRestore()
+    {
+        _restoreTimer?.Stop();
+        _restorePending = null;
+        _restoreBaseline = null;
+        _restoreAwaitSlot = null;
+        _restoreCandidate = 0;
+        _suppressWatchUntil = Environment.TickCount + 1500;
+        RefreshList();
+        string tail = _restoreMissed == 0 ? "" : $" (실패/미출현 {_restoreMissed}개{(_restoreLastErr is null ? "" : $" — {_restoreLastErr}")})";
+        SetStatus($"작업 세트 적용 완료: '{_restoreName}' — 이동 {_restorePlacedBase}개 + 재실행 배치 {_restoreDone}개{tail}.");
     }
 
     /// <summary>작업 세트 삭제.</summary>

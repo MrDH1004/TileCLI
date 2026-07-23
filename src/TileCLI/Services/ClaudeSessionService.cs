@@ -352,13 +352,17 @@ public static class ClaudeSessionService
             ? string.Empty
             : $"--title \"{title.Replace("\"", "")}\" --suppressApplicationTitle ";
 
+        // 한글/유니코드 보장: cmd 기본 코드페이지(CP949)에서는 Node 기반 CLI(claude/codex)의
+        // 한글 입출력이 깨진다 → UTF-8(65001)로 전환한 뒤 실행한다.
+        string run = $"chcp 65001 >nul & {command}";
+
         // 1순위: Windows Terminal (정리된 환경으로 CreateProcess)
         try
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "wt.exe",
-                Arguments = $"-d \"{cwd}\" {titleArgs}cmd /k {command}",
+                Arguments = $"-d \"{cwd}\" {titleArgs}cmd /k {run}",
                 UseShellExecute = false,   // 환경변수를 제어하려면 false 필요
                 WorkingDirectory = cwd
             };
@@ -372,8 +376,8 @@ public static class ClaudeSessionService
         try
         {
             string cmdArgs = string.IsNullOrWhiteSpace(title)
-                ? $"/k {command}"
-                : $"/k title {title.Replace("\"", "")} & {command}";
+                ? $"/k {run}"
+                : $"/k title {title.Replace("\"", "")} & {run}";
             var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
