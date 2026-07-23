@@ -289,6 +289,40 @@ public static class ClaudeSessionService
         catch (Exception ex) { error = ex.Message; return false; }
     }
 
+    /// <summary>
+    /// cwd의 git origin 리모트 URL에서 저장소 이름을 추출한다(예: .../TileCLI.git → TileCLI).
+    /// git 미설치·리모트 없음·타임아웃이면 null(호출부가 폴더명으로 폴백).
+    /// </summary>
+    public static string? TryGetRepoName(string? cwd)
+    {
+        if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) return null;
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "remote get-url origin",
+                WorkingDirectory = cwd,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return null;
+            string outp = p.StandardOutput.ReadToEnd().Trim();
+            if (!p.WaitForExit(3000)) { try { p.Kill(); } catch { } return null; }
+            if (p.ExitCode != 0 || string.IsNullOrWhiteSpace(outp)) return null;
+
+            string name = outp.TrimEnd('/');
+            int i = name.LastIndexOfAny(new[] { '/', ':' });
+            if (i >= 0) name = name[(i + 1)..];
+            if (name.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch { return null; }
+    }
+
     /// <summary>기존 Claude 세션 이어서 복구(claude -c).</summary>
     public static bool Resume(ClaudeSession session, out string error) =>
         LaunchCommand(session?.Cwd, "claude -c", out error);

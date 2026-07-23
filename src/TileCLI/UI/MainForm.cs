@@ -1244,8 +1244,8 @@ public sealed class MainForm : Form
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
         {
-            // 종류별 이어서-복구 명령: Claude=claude -c, GPT=config(GptResumeCmd)
-            string cmd = s.Kind == TerminalKind.Gpt ? _gptResumeCmd : "claude -c";
+            // 종류별 이어서-복구 명령: Claude=claude -c(+/rename 타이틀), GPT=config(GptResumeCmd)
+            string cmd = s.Kind == TerminalKind.Gpt ? _gptResumeCmd : BuildClaudeCommand(resume: true, s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err)) ok++; else lastErr = err;
         }
 
@@ -1268,14 +1268,34 @@ public sealed class MainForm : Form
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
         {
-            // 종류별 새 세션 명령: Claude=claude, GPT=config(GptNewCmd)
-            string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : "claude";
+            // 종류별 새 세션 명령: Claude=claude(+/rename 타이틀), GPT=config(GptNewCmd)
+            string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : BuildClaudeCommand(resume: false, s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err)) ok++; else lastErr = err;
         }
 
         SetStatus(ok == sel.Count
             ? $"새 세션 열기: {ok}개"
             : $"새 세션 열기: {ok}/{sel.Count}개 (실패: {lastErr})");
+    }
+
+    /// <summary>
+    /// 세션 창 타이틀: git origin 저장소 이름 우선, 없으면(깃 미연결) 세션 폴더 이름.
+    /// </summary>
+    private static string SessionWindowTitle(ClaudeSession s)
+    {
+        string name = ClaudeSessionService.TryGetRepoName(s.Cwd) ?? s.ProjectName;
+        return name.Replace("\"", "").Trim(); // 따옴표 제거(명령 인용 안전)
+    }
+
+    /// <summary>
+    /// Claude 실행 명령. 첫 입력으로 "/rename &lt;타이틀&gt;"을 넘겨 세션(터미널 타이틀) 이름을
+    /// 저장소/폴더 이름으로 바꾼다. resume=true면 claude -c, 아니면 claude.
+    /// </summary>
+    private static string BuildClaudeCommand(bool resume, ClaudeSession s)
+    {
+        string baseCmd = resume ? "claude -c" : "claude";
+        string title = SessionWindowTitle(s);
+        return string.IsNullOrWhiteSpace(title) ? baseCmd : $"{baseCmd} \"/rename {title}\"";
     }
 
     /// <summary>선택 세션의 작업 폴더(cwd)를 파일 탐색기로 연다.</summary>
@@ -1661,7 +1681,8 @@ public sealed class MainForm : Form
         foreach (var slot in pending)
         {
             var sess = new ClaudeSession { Cwd = slot.Cwd, SessionId = slot.SessionId };
-            if (ClaudeSessionService.Resume(sess, out string err)) launched++; else lastErr = err;
+            // 재실행 시에도 터미널 타이틀을 저장소/폴더 이름으로(/rename)
+            if (ClaudeSessionService.LaunchCommand(slot.Cwd, BuildClaudeCommand(resume: true, sess), out string err)) launched++; else lastErr = err;
         }
         SetStatus(launched > 0
             ? $"작업 세트 '{name}': 이동 {placedBase}개 + 세션 {launched}개 재실행 중… (창 뜨면 자동 배치)"
