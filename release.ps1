@@ -4,6 +4,19 @@ param([ValidateSet('patch', 'minor', 'major')][string]$bump = 'patch')
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
+
+# 빌드 산출물(bin\)에서 실행 중인 TileCLI가 있으면 종료한다.
+# 실행 중이면 publish가 파일 잠금(GenerateBundle: being used by another process)으로 실패하므로.
+# 이 저장소 bin\ 경로 프로세스만 겨냥 — 설치본 등 다른 경로의 TileCLI는 건드리지 않는다.
+$binPath = Join-Path $root 'src\TileCLI\bin'
+$locking = Get-Process TileCLI -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($binPath, [System.StringComparison]::OrdinalIgnoreCase) }
+if ($locking) {
+    Write-Host "빌드 산출물 실행 중 프로세스 종료: PID $($locking.Id -join ', ')"
+    $locking | Stop-Process -Force
+    Start-Sleep -Milliseconds 700
+}
+
 $csproj = Join-Path $root 'src\TileCLI\TileCLI.csproj'
 $text = [System.IO.File]::ReadAllText($csproj, [System.Text.Encoding]::UTF8)
 
