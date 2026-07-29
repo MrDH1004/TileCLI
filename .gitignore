@@ -24,3 +24,6 @@ uidump.txt
 
 # ---- Machine-specific (contains personal absolute paths) ----
 claude-resume-context-menu-*.reg
+
+# ---- Auto-update temp ----
+TileCLI_update.exe

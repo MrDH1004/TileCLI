@@ -62,7 +62,7 @@ public sealed class MainForm : Form
     private bool _linkAdjacent = true;
     private bool _claudeGptOnly;   // true면 판별된 Claude/GPT 창만 목록에 표시(일반/판별불가 제외)
     private readonly HashSet<IntPtr> _excluded = new();        // 수동으로 정렬 제외한 창(세션 기준)
-    private bool _excludeNonAi;                                // true면 AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외
+    private bool _excludeNonAi = true;                         // 기본값: AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외
     private readonly HashSet<IntPtr> _arrangeExcluded = new(); // 실제 정렬 제외 집합(수동 ∪ AI아님옵션) — RefreshList에서 계산
     private ListViewGroup _grpTarget = null!;                  // "정렬 대상" 그룹(탭)
     private ListViewGroup _grpExcluded = null!;                // "제외" 그룹(탭)
@@ -113,7 +113,7 @@ public sealed class MainForm : Form
         if (string.Equals(_config.GetString("Theme"), "Light", StringComparison.OrdinalIgnoreCase))
             Theme.SetMode(ThemeMode.Light);
 
-        Text = "TileCLI";
+        Text = $"TileCLI v{AppVersion.Display}";
         Font = new Font("Segoe UI", 9F);
         MinimumSize = new Size(880, 640);
         Size = new Size(980, 720);
@@ -156,6 +156,9 @@ public sealed class MainForm : Form
 
             // 감시 모드: 새 창 표시/파괴 감지 → 디바운스 후 자동 재배치
             _watcher.Changed += OnWatcherChanged;
+
+            // 시작 시 조용히 업데이트 확인(새 버전 있을 때만 안내)
+            _ = CheckUpdateAsync(silent: true);
 
             // 터미널 제목 실시간 동기화(클로드가 제목을 계속 바꾸므로 목록 텍스트만 제자리 갱신)
             _titleSync = new System.Windows.Forms.Timer { Interval = 1500 };
@@ -974,6 +977,48 @@ public sealed class MainForm : Form
         return true;
     }
 
+    private bool _updateChecking;
+
+    /// <summary>
+    /// GitHub Releases에서 최신 버전을 확인하고, 새 버전이면 다운로드→교체→재실행한다.
+    /// silent=true면 실패/최신일 때 조용히(시작 시). false면 상태바로 결과 안내.
+    /// </summary>
+    private async Task CheckUpdateAsync(bool silent)
+    {
+        if (_updateChecking) return;
+        _updateChecking = true;
+        try
+        {
+            if (!silent) SetStatus("업데이트 확인 중…");
+            UpdateInfo? info;
+            try { info = await AutoUpdateService.CheckLatestAsync(); }
+            catch (Exception ex) { if (!silent) SetStatus($"업데이트 확인 실패: {ex.Message}"); return; }
+
+            if (info is null) { if (!silent) SetStatus("릴리스 정보를 찾을 수 없습니다."); return; }
+            if (info.Version <= AppVersion.Current)
+            {
+                if (!silent) SetStatus($"이미 최신 버전입니다 (v{AppVersion.Display}).");
+                return;
+            }
+
+            var res = MessageBox.Show(this,
+                $"새 버전 v{info.Version} 이(가) 있습니다. 지금 업데이트할까요?\n(현재 v{AppVersion.Display})",
+                "업데이트", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (res != DialogResult.Yes) return;
+
+            SetStatus($"v{info.Version} 다운로드 중…");
+            string? newExe;
+            try { newExe = await AutoUpdateService.DownloadAsync(info); }
+            catch (Exception ex) { SetStatus($"다운로드 실패: {ex.Message}"); return; }
+            if (newExe is null) { SetStatus("다운로드 실패."); return; }
+
+            if (!AutoUpdateService.ApplyAndRestart(newExe)) { SetStatus("업데이트 적용 실패."); return; }
+            _reallyExit = true;             // 트레이 최소화 가드 우회하고 실제 종료
+            Application.Exit();             // 종료 후 배치가 교체·재실행
+        }
+        finally { _updateChecking = false; }
+    }
+
     /// <summary>모두 선택 ↔ 모두 해제 토글(현재 상태의 반대로).</summary>
     private void ToggleAllChecks()
     {
@@ -1022,6 +1067,7 @@ public sealed class MainForm : Form
     {
         var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
         menu.Items.Add("열기", null, (_, _) => RestoreFromTray());
+        menu.Items.Add("업데이트 확인", null, async (_, _) => await CheckUpdateAsync(silent: false));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("완전 종료", null, (_, _) => ExitApp());
 
@@ -1602,7 +1648,7 @@ public sealed class MainForm : Form
             _minimizeToTray = _config.GetBool("MinimizeToTray", true);
             _linkAdjacent = _config.GetBool("LinkAdjacent", true);
             _claudeGptOnly = _config.GetBool("ClaudeGptOnly", false);
-            _excludeNonAi = _config.GetBool("ExcludeNonAi", false);
+            _excludeNonAi = _config.GetBool("ExcludeNonAi", true);
             _chkLink.Checked = _linkAdjacent;
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
