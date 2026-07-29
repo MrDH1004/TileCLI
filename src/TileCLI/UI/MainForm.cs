@@ -61,9 +61,11 @@ public sealed class MainForm : Form
     private bool _minimizeToTray = true;
     private bool _linkAdjacent = true;
     private bool _claudeGptOnly;   // true면 판별된 Claude/GPT 창만 목록에 표시(일반/판별불가 제외)
-    private readonly HashSet<IntPtr> _excluded = new(); // 정렬에서 제외할 창(세션 기준)
-    private ListViewGroup _grpTarget = null!;           // "정렬 대상" 그룹(탭)
-    private ListViewGroup _grpExcluded = null!;         // "제외" 그룹(탭)
+    private readonly HashSet<IntPtr> _excluded = new();        // 수동으로 정렬 제외한 창(세션 기준)
+    private bool _excludeNonAi;                                // true면 AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외
+    private readonly HashSet<IntPtr> _arrangeExcluded = new(); // 실제 정렬 제외 집합(수동 ∪ AI아님옵션) — RefreshList에서 계산
+    private ListViewGroup _grpTarget = null!;                  // "정렬 대상" 그룹(탭)
+    private ListViewGroup _grpExcluded = null!;                // "제외" 그룹(탭)
     private string _selectedProfile = "";
     private OptionsForm? _optionsForm;
     private readonly ToolTip _toolTip = new();
@@ -140,6 +142,7 @@ public sealed class MainForm : Form
 
             // 저장된 UI 옵션/상태 복원(모니터 선택·간격·걸쳐배치·방향·프로파일·체크옵션·감시모드)
             ApplyConfig();
+            RefreshList(); // config의 표시/제외 옵션(ClaudeGptOnly·ExcludeNonAi)을 로드 뒤 반영
             _uiReady = true;
 
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -341,6 +344,20 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>옵션 창용: AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외(목록엔 '제외' 그룹으로 표시).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool ExcludeNonAiFromArrange
+    {
+        get => _excludeNonAi;
+        set
+        {
+            _excludeNonAi = value;
+            SaveConfig();
+            RefreshList();
+            SetStatus(value ? "AI 아닌 창은 정렬에서 제외." : "AI 아닌 창도 정렬 포함.");
+        }
+    }
+
     public ThemeMode CurrentThemeMode => Theme.Mode;
 
     /// <summary>테마 모드 지정 + 전체 재스타일 + 저장. 옵션 창도 함께 재스타일.</summary>
@@ -424,7 +441,7 @@ public sealed class MainForm : Form
         menu.Opening += (_, _) =>
         {
             var sel = GetSelectedTerminals();
-            bool allExcluded = sel.Count > 0 && sel.All(t => _excluded.Contains(t.Handle));
+            bool allExcluded = sel.Count > 0 && sel.All(t => _arrangeExcluded.Contains(t.Handle));
             toggle.Text = allExcluded ? "정렬에 포함" : "정렬에서 제외";
         };
         return menu;
@@ -435,11 +452,15 @@ public sealed class MainForm : Form
     {
         var sel = GetSelectedTerminals();
         if (sel.Count == 0) { SetStatus("제외/포함할 터미널을 선택하세요."); return; }
-        bool allExcluded = sel.All(t => _excluded.Contains(t.Handle));
+        bool allExcluded = sel.All(t => _arrangeExcluded.Contains(t.Handle));
         foreach (var t in sel)
             if (allExcluded) _excluded.Remove(t.Handle); else _excluded.Add(t.Handle);
         RefreshList();
-        SetStatus(allExcluded ? $"정렬에 포함: {sel.Count}개" : $"정렬에서 제외: {sel.Count}개");
+        // AI아님 옵션으로 자동 제외된 창은 수동 포함해도 다시 제외될 수 있음(옵션이 우선)
+        bool stuck = allExcluded && sel.Any(t => _arrangeExcluded.Contains(t.Handle));
+        SetStatus(allExcluded
+            ? (stuck ? "정렬에 포함 시도 — 일부는 'AI 아닌 창 제외' 옵션으로 계속 제외됨(옵션 끄면 포함)." : $"정렬에 포함: {sel.Count}개")
+            : $"정렬에서 제외: {sel.Count}개");
     }
 
     /// <summary>목록에서 선택(하이라이트)된 터미널들.</summary>
@@ -543,7 +564,7 @@ public sealed class MainForm : Form
 
         var dragItem = _dragItem!;
         var handle = dragItem.Tag is IntPtr h ? h : IntPtr.Zero;
-        bool wasExcluded = _excluded.Contains(handle);
+        bool wasExcluded = _arrangeExcluded.Contains(handle);
         bool toExcluded = DropGroupAt(e.Location) == _grpExcluded;
 
         int src = dragItem.Index;
@@ -1120,11 +1141,17 @@ public sealed class MainForm : Form
         // 닫힌 창은 제외 집합에서 정리
         _excluded.RemoveWhere(h => _terminals.All(t => t.Handle != h));
 
+        // 실제 정렬 제외 집합 = 수동 제외 ∪ (AI아님 옵션이면 Claude/GPT 아닌 창)
+        _arrangeExcluded.Clear();
+        foreach (var t in _terminals)
+            if (_excluded.Contains(t.Handle) || (_excludeNonAi && t.Kind is not (TerminalKind.Claude or TerminalKind.Gpt)))
+                _arrangeExcluded.Add(t.Handle);
+
         _listView.BeginUpdate();
         _listView.Items.Clear();
         foreach (var t in _terminals)
         {
-            bool excluded = _excluded.Contains(t.Handle);
+            bool excluded = _arrangeExcluded.Contains(t.Handle);
             var item = new ListViewItem(t.DisplayTitle) { Tag = t.Handle, Group = excluded ? _grpExcluded : _grpTarget };
             item.SubItems.Add(t.KindLabel);
             item.UseItemStyleForSubItems = false;
@@ -1140,7 +1167,7 @@ public sealed class MainForm : Form
             item.Checked = previouslyChecked.Contains(t.Handle);
             _listView.Items.Add(item);
         }
-        int excludedCount = _terminals.Count(t => _excluded.Contains(t.Handle));
+        int excludedCount = _arrangeExcluded.Count;
         _grpTarget.Header = $"정렬 대상 ({_terminals.Count - excludedCount})";
         _grpExcluded.Header = $"제외 ({excludedCount})";
         // 제외가 비어도 절취선(그룹 헤더)을 상시 유지 + 드래그 드롭 힌트(빈 그룹은 헤더가 숨으므로 안내 행을 둔다)
@@ -1251,14 +1278,14 @@ public sealed class MainForm : Form
 
     private List<IntPtr> GetTargetWindows()
     {
-        // 제외된 창은 항상 정렬 대상에서 뺀다.
+        // 제외된 창(수동/AI아님)은 항상 정렬 대상에서 뺀다.
         var checkedHandles = new List<IntPtr>();
         foreach (ListViewItem item in _listView.Items)
-            if (item.Checked && item.Tag is IntPtr h && !_excluded.Contains(h)) checkedHandles.Add(h);
+            if (item.Checked && item.Tag is IntPtr h && !_arrangeExcluded.Contains(h)) checkedHandles.Add(h);
 
         if (checkedHandles.Count == 0)
             foreach (ListViewItem item in _listView.Items)
-                if (item.Tag is IntPtr h && !_excluded.Contains(h)) checkedHandles.Add(h);
+                if (item.Tag is IntPtr h && !_arrangeExcluded.Contains(h)) checkedHandles.Add(h);
 
         return checkedHandles;
     }
@@ -1542,6 +1569,7 @@ public sealed class MainForm : Form
         _config.SetBool("MinimizeToTray", _minimizeToTray);
         _config.SetBool("LinkAdjacent", _linkAdjacent);
         _config.SetBool("ClaudeGptOnly", _claudeGptOnly);
+        _config.SetBool("ExcludeNonAi", _excludeNonAi);
         _config.SetBool("WatchMode", _watchMode);
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
         _config.SetString("Direction", _currentDirection.ToString());
@@ -1574,6 +1602,7 @@ public sealed class MainForm : Form
             _minimizeToTray = _config.GetBool("MinimizeToTray", true);
             _linkAdjacent = _config.GetBool("LinkAdjacent", true);
             _claudeGptOnly = _config.GetBool("ClaudeGptOnly", false);
+            _excludeNonAi = _config.GetBool("ExcludeNonAi", false);
             _chkLink.Checked = _linkAdjacent;
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
@@ -1926,7 +1955,7 @@ public sealed class MainForm : Form
         RefreshList();                               // 집합이 바뀐 경우만 UI 갱신
         if (_terminals.Count == 0) return;
 
-        var allTargets = _terminals.Select(t => t.Handle).Where(h => !_excluded.Contains(h)).ToList();
+        var allTargets = _terminals.Select(t => t.Handle).Where(h => !_arrangeExcluded.Contains(h)).ToList();
         DoArrange(_currentDirection, allTargets);    // 전 창 대상(체크 무시) — 새 창 포함 재배치
         SetStatus($"감시 모드: 창 변화 감지 → 자동 배치({DirName(_currentDirection)}, {allTargets.Count}개).");
     }
