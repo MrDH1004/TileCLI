@@ -81,12 +81,19 @@ public static class WindowDiscovery
 
                 string title = NativeMethods.GetWindowTitle(hWnd);
 
-                // 1순위: 창 제목 마커(창별 정확 — WT 단일 프로세스 대응). 2순위: 프로세스 트리.
+                // 1순위: 창 제목 마커(창별 정확). 2순위: 프로세스 트리.
                 var kind = ClassifyByTitle(title, claudeTitles, gptTitles);
                 if (kind == TerminalKind.Unknown)
-                    kind = inspector.ContainsClaude(pid) ? TerminalKind.Claude
-                        : inspector.ContainsAny(pid, gptNames) ? TerminalKind.Gpt
-                        : TerminalKind.Plain;
+                {
+                    // WT는 모든 창이 한 프로세스를 공유 → 프로세스 트리로는 창별 구분이 불가하다.
+                    // 마커가 없으면 형제 창의 claude/codex로 오탐하므로 폴백을 쓰지 않고 일반으로 둔다.
+                    if (IsSharedProcessHost(className, procName))
+                        kind = TerminalKind.Plain;
+                    else
+                        kind = inspector.ContainsClaude(pid) ? TerminalKind.Claude
+                            : inspector.ContainsAny(pid, gptNames) ? TerminalKind.Gpt
+                            : TerminalKind.Plain;
+                }
 
                 list.Add(new TerminalWindow
                 {
@@ -124,6 +131,15 @@ public static class WindowDiscovery
                 return TerminalKind.Claude;
         return TerminalKind.Unknown;
     }
+
+    /// <summary>
+    /// 여러 창이 한 프로세스를 공유하는 호스트(Windows Terminal)인지. 이런 창은 프로세스 트리로
+    /// 창별 판별이 불가하므로, 제목 마커가 없으면 claude/gpt로 단정하면 안 된다.
+    /// </summary>
+    private static bool IsSharedProcessHost(string className, string procName) =>
+        string.Equals(className, CascadiaClass, StringComparison.Ordinal)
+        || string.Equals(procName, "WindowsTerminal", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(procName, "wt", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsTerminal(string className, string procName)
     {

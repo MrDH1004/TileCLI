@@ -12,6 +12,7 @@ public sealed class OptionsForm : Form
     private readonly MainForm _main;
     private CheckBox _chkTray = null!;
     private CheckBox _chkAutoStart = null!;
+    private CheckBox _chkCliOnly = null!;
     private RadioButton _rbDark = null!;
     private RadioButton _rbLight = null!;
     private ComboBox _cboProfiles = null!;
@@ -27,7 +28,7 @@ public sealed class OptionsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(452, 476);
+        ClientSize = new Size(452, 500);
         ShowInTaskbar = false;
 
         BuildUi();
@@ -42,7 +43,7 @@ public sealed class OptionsForm : Form
         _loading = true;
 
         // ── 일반 ──
-        var gGeneral = Card("일반", 12, 12, 428, 84);
+        var gGeneral = Card("일반", 12, 12, 428, 108);
         _chkTray = new CheckBox { Text = "X로 트레이 최소화 (완전 종료는 트레이 메뉴)", AutoSize = true, Location = new Point(16, 30), Checked = _main.MinimizeToTray };
         _chkTray.CheckedChanged += (_, _) => { if (!_loading) _main.MinimizeToTray = _chkTray.Checked; };
         _chkAutoStart = new CheckBox { Text = "Windows 시작 시 자동 실행", AutoSize = true, Location = new Point(16, 54), Checked = _main.AutoStartEnabled };
@@ -52,11 +53,14 @@ public sealed class OptionsForm : Form
             _main.SetAutoStart(_chkAutoStart.Checked);
             _loading = true; _chkAutoStart.Checked = _main.AutoStartEnabled; _loading = false; // 실제 상태로 재동기화
         };
+        _chkCliOnly = new CheckBox { Text = "판별된 CLI(Claude·GPT) 창만 표시", AutoSize = true, Location = new Point(16, 78), Checked = _main.ClaudeGptOnly };
+        _chkCliOnly.CheckedChanged += (_, _) => { if (!_loading) _main.ClaudeGptOnly = _chkCliOnly.Checked; };
         gGeneral.Controls.Add(_chkTray);
         gGeneral.Controls.Add(_chkAutoStart);
+        gGeneral.Controls.Add(_chkCliOnly);
 
         // ── 테마 ──
-        var gTheme = Card("테마", 12, 104, 428, 64);
+        var gTheme = Card("테마", 12, 128, 428, 64);
         _rbDark = new RadioButton { Text = "다크", AutoSize = true, Location = new Point(16, 30), Checked = _main.CurrentThemeMode == ThemeMode.Dark };
         _rbLight = new RadioButton { Text = "라이트", AutoSize = true, Location = new Point(120, 30), Checked = _main.CurrentThemeMode == ThemeMode.Light };
         // Click은 실제 사용자 조작에만 발화(프로그램적 Checked 변경으로는 안 뜸) → 표시 중 오발화 방지
@@ -66,7 +70,7 @@ public sealed class OptionsForm : Form
         gTheme.Controls.Add(_rbLight);
 
         // ── 단축키 ──
-        var gHotkey = Card("전역 단축키", 12, 180, 428, 74);
+        var gHotkey = Card("전역 단축키", 12, 204, 428, 74);
         var lblHk = new Label { Text = "자동/가로/세로/그리드에 전역 단축키를 지정합니다.", AutoSize = true, Location = new Point(16, 30) };
         var btnHk = MakeButton("단축키 설정 열기…", 150, (_, _) => _main.OpenHotkeySettings());
         btnHk.Location = new Point(16, 44);
@@ -74,7 +78,7 @@ public sealed class OptionsForm : Form
         gHotkey.Controls.Add(btnHk);
 
         // ── 프로파일 ──
-        var gProfile = Card("프로파일 (배치 스타일)", 12, 266, 428, 150);
+        var gProfile = Card("프로파일 (배치 스타일)", 12, 290, 428, 150);
         _cboProfiles = new ComboBox { Location = new Point(16, 32), Size = new Size(404, 24), DropDownStyle = ComboBoxStyle.DropDownList };
         _cboProfiles.SelectedIndexChanged += (_, _) => { if (!_loading && _cboProfiles.SelectedItem is string s) _main.SelectedProfile = s; };
         _txtProfileName = new TextBox { Location = new Point(16, 66), Size = new Size(250, 24), PlaceholderText = "저장할 이름" };

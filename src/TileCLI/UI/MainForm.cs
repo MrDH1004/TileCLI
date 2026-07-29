@@ -60,6 +60,10 @@ public sealed class MainForm : Form
     // 옵션 창으로 이동된 상태(트레이 최소화·인접 연동·선택 프로파일)
     private bool _minimizeToTray = true;
     private bool _linkAdjacent = true;
+    private bool _claudeGptOnly;   // true면 판별된 Claude/GPT 창만 목록에 표시(일반/판별불가 제외)
+    private readonly HashSet<IntPtr> _excluded = new(); // 정렬에서 제외할 창(세션 기준)
+    private ListViewGroup _grpTarget = null!;           // "정렬 대상" 그룹(탭)
+    private ListViewGroup _grpExcluded = null!;         // "제외" 그룹(탭)
     private string _selectedProfile = "";
     private OptionsForm? _optionsForm;
     private readonly ToolTip _toolTip = new();
@@ -323,6 +327,20 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>옵션 창용: 판별된 Claude/GPT 창만 목록에 표시(일반/판별불가 창 숨김).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool ClaudeGptOnly
+    {
+        get => _claudeGptOnly;
+        set
+        {
+            _claudeGptOnly = value;
+            SaveConfig();
+            RefreshList();
+            SetStatus(value ? "판별된 CLI(Claude·GPT) 창만 표시." : "모든 터미널 창 표시.");
+        }
+    }
+
     public ThemeMode CurrentThemeMode => Theme.Mode;
 
     /// <summary>테마 모드 지정 + 전체 재스타일 + 저장. 옵션 창도 함께 재스타일.</summary>
@@ -383,6 +401,13 @@ public sealed class MainForm : Form
         _listView.MouseUp += OnTerminalListMouseUp;
         _listView.MouseCaptureChanged += (_, _) => { if (_dragActive) CancelDrag(); };
         _listView.KeyDown += (_, e) => { if (_dragActive && e.KeyCode == Keys.Escape) { CancelDrag(); e.Handled = true; } };
+        // 정렬 대상 / 제외 그룹(탭 구분)
+        _listView.ShowGroups = true;
+        _grpTarget = new ListViewGroup("정렬 대상") { HeaderAlignment = HorizontalAlignment.Left };
+        _grpExcluded = new ListViewGroup("제외") { HeaderAlignment = HorizontalAlignment.Left };
+        _listView.Groups.Add(_grpTarget);
+        _listView.Groups.Add(_grpExcluded);
+
         _listView.ContextMenuStrip = BuildTerminalContextMenu();
         return _listView;
     }
@@ -391,8 +416,30 @@ public sealed class MainForm : Form
     private ContextMenuStrip BuildTerminalContextMenu()
     {
         var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
+        var toggle = new ToolStripMenuItem("정렬에서 제외", null, (_, _) => ToggleExcludeSelected());
+        menu.Items.Add(toggle);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("강제 종료", null, (_, _) => ForceKillSelectedTerminals());
+        // 선택 상태에 따라 제외↔포함 라벨 전환
+        menu.Opening += (_, _) =>
+        {
+            var sel = GetSelectedTerminals();
+            bool allExcluded = sel.Count > 0 && sel.All(t => _excluded.Contains(t.Handle));
+            toggle.Text = allExcluded ? "정렬에 포함" : "정렬에서 제외";
+        };
         return menu;
+    }
+
+    /// <summary>선택 창을 정렬 제외↔포함 토글(모두 제외 상태면 포함으로, 아니면 제외로).</summary>
+    private void ToggleExcludeSelected()
+    {
+        var sel = GetSelectedTerminals();
+        if (sel.Count == 0) { SetStatus("제외/포함할 터미널을 선택하세요."); return; }
+        bool allExcluded = sel.All(t => _excluded.Contains(t.Handle));
+        foreach (var t in sel)
+            if (allExcluded) _excluded.Remove(t.Handle); else _excluded.Add(t.Handle);
+        RefreshList();
+        SetStatus(allExcluded ? $"정렬에 포함: {sel.Count}개" : $"정렬에서 제외: {sel.Count}개");
     }
 
     /// <summary>목록에서 선택(하이라이트)된 터미널들.</summary>
@@ -469,7 +516,7 @@ public sealed class MainForm : Form
         }
         if (e.Button != MouseButtons.Left) return;
         var hit = _listView.HitTest(e.Location);
-        if (hit.Item is null) return;
+        if (hit.Item is null || hit.Item.Tag is not IntPtr) return; // 안내(플레이스홀더) 행은 드래그 안 함
         if (hit.Location == ListViewHitTestLocations.StateImage) return; // 체크박스 클릭은 드래그 아님
         _dragItem = hit.Item;
         _dragDownPos = e.Location;
@@ -494,15 +541,39 @@ public sealed class MainForm : Form
         if (!_dragActive) { _dragItem = null; return; }
         UpdateDragTarget(e.Location);
 
-        int src = _dragItem!.Index;
+        var dragItem = _dragItem!;
+        var handle = dragItem.Tag is IntPtr h ? h : IntPtr.Zero;
+        bool wasExcluded = _excluded.Contains(handle);
+        bool toExcluded = DropGroupAt(e.Location) == _grpExcluded;
+
+        int src = dragItem.Index;
         int dst = _dragTargetIndex;
         bool toEnd = _dragToEnd;
         EndDragVisuals();
 
-        if (toEnd && src != _listView.Items.Count - 1) MoveRowToEnd(src);
+        if (handle != IntPtr.Zero && wasExcluded != toExcluded)
+        {
+            // 다른 그룹으로 드롭 → 제외/포함 토글(순서 변경 대신)
+            if (toExcluded) _excluded.Add(handle); else _excluded.Remove(handle);
+            RefreshList();
+            SetStatus(toExcluded ? "정렬에서 제외(드래그)" : "정렬에 포함(드래그)");
+        }
+        else if (toEnd && src != _listView.Items.Count - 1) MoveRowToEnd(src);
         else if (dst >= 0 && dst != src) SwapRows(src, dst);
         else SetStatus("순서 변경 없음.");
         _dragItem = null;
+    }
+
+    /// <summary>드롭 위치가 어느 그룹(정렬 대상/제외)인지 판정. 항목 위면 그 그룹, 빈 영역이면 Y로 판단.</summary>
+    private ListViewGroup DropGroupAt(Point pt)
+    {
+        var hit = _listView.HitTest(pt);
+        if (hit.Item?.Group is { } g) return g;
+        ListViewItem? lastTarget = null;
+        foreach (ListViewItem it in _listView.Items)
+            if (it.Group == _grpTarget) lastTarget = it;
+        int boundary = lastTarget?.Bounds.Bottom ?? 0;
+        return pt.Y > boundary ? _grpExcluded : _grpTarget;
     }
 
     /// <summary>임계 거리를 넘으면 드래그 시작: 마우스에 붙는 고스트 생성 + 가장자리 자동 스크롤 타이머 가동.</summary>
@@ -1029,6 +1100,10 @@ public sealed class MainForm : Form
 
         _terminals = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers);
 
+        // 판별된 CLI만 표시: 마커로 Claude/GPT로 확정된 창만 남기고 판별 불가(일반) 창은 제외
+        if (_claudeGptOnly)
+            _terminals = _terminals.Where(t => t.Kind is TerminalKind.Claude or TerminalKind.Gpt).ToList();
+
         // 사용자가 드래그로 정한 순서 유지: 알려진 핸들은 그 순서대로, 신규 창은 탐지 순서로 뒤에
         if (_windowOrder.Count > 0)
         {
@@ -1042,22 +1117,39 @@ public sealed class MainForm : Form
             _windowOrder = _terminals.Select(t => t.Handle).ToList(); // 닫힌 창 정리 + 신규 반영
         }
 
+        // 닫힌 창은 제외 집합에서 정리
+        _excluded.RemoveWhere(h => _terminals.All(t => t.Handle != h));
+
         _listView.BeginUpdate();
         _listView.Items.Clear();
         foreach (var t in _terminals)
         {
-            var item = new ListViewItem(t.DisplayTitle) { Tag = t.Handle };
+            bool excluded = _excluded.Contains(t.Handle);
+            var item = new ListViewItem(t.DisplayTitle) { Tag = t.Handle, Group = excluded ? _grpExcluded : _grpTarget };
             item.SubItems.Add(t.KindLabel);
             item.UseItemStyleForSubItems = false;
-            foreach (ListViewItem.ListViewSubItem si in item.SubItems) si.ForeColor = Theme.Text;
-            item.SubItems[1].ForeColor = t.Kind switch  // "종류" 셀만 강조색
-            {
-                TerminalKind.Claude => Theme.Claude,
-                TerminalKind.Gpt => Theme.Gpt,
-                _ => Theme.TextDim
-            };
+            // 제외 창은 흐리게, 정렬 대상은 종류 셀만 강조색
+            foreach (ListViewItem.ListViewSubItem si in item.SubItems) si.ForeColor = excluded ? Theme.TextDim : Theme.Text;
+            if (!excluded)
+                item.SubItems[1].ForeColor = t.Kind switch
+                {
+                    TerminalKind.Claude => Theme.Claude,
+                    TerminalKind.Gpt => Theme.Gpt,
+                    _ => Theme.TextDim
+                };
             item.Checked = previouslyChecked.Contains(t.Handle);
             _listView.Items.Add(item);
+        }
+        int excludedCount = _terminals.Count(t => _excluded.Contains(t.Handle));
+        _grpTarget.Header = $"정렬 대상 ({_terminals.Count - excludedCount})";
+        _grpExcluded.Header = $"제외 ({excludedCount})";
+        // 제외가 비어도 절취선(그룹 헤더)을 상시 유지 + 드래그 드롭 힌트(빈 그룹은 헤더가 숨으므로 안내 행을 둔다)
+        if (excludedCount == 0)
+        {
+            var ph = new ListViewItem("↓ 여기로 드래그하면 정렬에서 제외") { Group = _grpExcluded, Tag = null, ForeColor = Theme.TextDim };
+            ph.SubItems.Add("");
+            ph.UseItemStyleForSubItems = true;
+            _listView.Items.Add(ph);
         }
         _listView.EndUpdate();
         FitTerminalColumns();
@@ -1159,13 +1251,14 @@ public sealed class MainForm : Form
 
     private List<IntPtr> GetTargetWindows()
     {
+        // 제외된 창은 항상 정렬 대상에서 뺀다.
         var checkedHandles = new List<IntPtr>();
         foreach (ListViewItem item in _listView.Items)
-            if (item.Checked && item.Tag is IntPtr h) checkedHandles.Add(h);
+            if (item.Checked && item.Tag is IntPtr h && !_excluded.Contains(h)) checkedHandles.Add(h);
 
         if (checkedHandles.Count == 0)
             foreach (ListViewItem item in _listView.Items)
-                if (item.Tag is IntPtr h) checkedHandles.Add(h);
+                if (item.Tag is IntPtr h && !_excluded.Contains(h)) checkedHandles.Add(h);
 
         return checkedHandles;
     }
@@ -1448,6 +1541,7 @@ public sealed class MainForm : Form
 
         _config.SetBool("MinimizeToTray", _minimizeToTray);
         _config.SetBool("LinkAdjacent", _linkAdjacent);
+        _config.SetBool("ClaudeGptOnly", _claudeGptOnly);
         _config.SetBool("WatchMode", _watchMode);
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
         _config.SetString("Direction", _currentDirection.ToString());
@@ -1479,6 +1573,7 @@ public sealed class MainForm : Form
         {
             _minimizeToTray = _config.GetBool("MinimizeToTray", true);
             _linkAdjacent = _config.GetBool("LinkAdjacent", true);
+            _claudeGptOnly = _config.GetBool("ClaudeGptOnly", false);
             _chkLink.Checked = _linkAdjacent;
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
@@ -1831,7 +1926,7 @@ public sealed class MainForm : Form
         RefreshList();                               // 집합이 바뀐 경우만 UI 갱신
         if (_terminals.Count == 0) return;
 
-        var allTargets = _terminals.Select(t => t.Handle).ToList();
+        var allTargets = _terminals.Select(t => t.Handle).Where(h => !_excluded.Contains(h)).ToList();
         DoArrange(_currentDirection, allTargets);    // 전 창 대상(체크 무시) — 새 창 포함 재배치
         SetStatus($"감시 모드: 창 변화 감지 → 자동 배치({DirName(_currentDirection)}, {allTargets.Count}개).");
     }
