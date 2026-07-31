@@ -27,3 +27,6 @@ claude-resume-context-menu-*.reg
 
 # ---- Auto-update temp ----
 TileCLI_update.exe
+
+# ---- Installer build output (Inno Setup) ----
+installer/Output/
