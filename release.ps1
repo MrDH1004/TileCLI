@@ -1,6 +1,10 @@
-# TileCLI 릴리스: 버전 자동 증가 → 단일 exe publish → GitHub Release에 exe만 업로드.
-# 사용: powershell -ExecutionPolicy Bypass -File release.ps1 [patch|minor|major]  (기본 patch)
-param([ValidateSet('patch', 'minor', 'major')][string]$bump = 'patch')
+﻿# TileCLI 릴리스: 버전 자동 증가 → 단일 exe publish → GitHub Release(v{ver})에 exe 업로드.
+# 인스톨러는 '최초 1회'만 별도 'setup' 릴리스에 올리고(안정 링크), 이후 업데이트는 앱이 exe로 자동 처리.
+# 사용: powershell -ExecutionPolicy Bypass -File release.ps1 [patch|minor|major] [-ForceInstaller]
+param(
+    [ValidateSet('patch', 'minor', 'major')][string]$bump = 'patch',
+    [switch]$ForceInstaller   # 인스톨러를 강제로 다시 빌드·업로드(기본은 최초 1회만)
+)
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
@@ -53,3 +57,49 @@ if ($before -eq $after) { throw "버전 커밋이 생성되지 않음(스테이�
 Invoke-Checked 'git push' { git -C $root push origin main | Out-Null }
 Invoke-Checked 'gh release create' { gh release create "v$ver" $exe --repo MrDH1004/TileCLI --title "TileCLI v$ver" --notes "TileCLI v$ver" | Out-Null }
 Write-Host "릴리스 완료: v$ver (exe 업로드됨, 커밋 $($after.Substring(0,7)))"
+
+# ── 인스톨러: 최초 1회만 'setup' 릴리스에 업로드(안정 링크). 이후엔 exe만 배포되고 앱이 자동 업데이트.
+#   setup 릴리스는 --latest=false 로 만들어, auto-update의 /releases/latest 가 항상 버전 릴리스를 가리키게 한다.
+$setupTag = 'setup'
+# gh 존재 확인(없으면 stderr+비정상 종료) — Stop 정책에서 중단되지 않게 EAP 완화 + stderr 무시.
+$eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+$names = gh release view $setupTag --repo MrDH1004/TileCLI --json assets --jq '.assets[].name' 2>$null
+$installerExists = ($LASTEXITCODE -eq 0) -and ($names -match 'TileCLI-Setup')
+$ErrorActionPreference = $eap
+
+if ($installerExists -and -not $ForceInstaller) {
+    Write-Host "인스톨러 이미 게시됨(setup) — 이번엔 exe만 배포(앱 자동 업데이트)."
+}
+else {
+    # Inno Setup 컴파일러 탐지(퍼-유저 설치 경로 우선)
+    $iscc = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+    if (-not $iscc) { throw "인스톨러 업로드 필요하나 Inno Setup(ISCC.exe) 없음 — 'winget install --id JRSoftware.InnoSetup -e' 후 재실행" }
+
+    Write-Host '인스톨러 컴파일 중...'
+    Invoke-Checked 'ISCC 컴파일' { & $iscc (Join-Path $root 'installer\TileCLI.iss') | Out-Null }
+    $setupExe = Get-ChildItem (Join-Path $root 'installer\Output') -Filter 'TileCLI-Setup-*.exe' |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+    if (-not $setupExe) { throw '인스톨러 산출물 없음(installer\Output)' }
+
+    # 고정 파일명으로 복사 → 다운로드 링크가 버전과 무관하게 안정적
+    $stable = Join-Path $setupExe.DirectoryName 'TileCLI-Setup.exe'
+    Copy-Item $setupExe.FullName $stable -Force
+
+    # setup 릴리스가 없으면 생성(latest 아님), 있으면 자산만 교체 업로드
+    $eap2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    gh release view $setupTag --repo MrDH1004/TileCLI 1>$null 2>$null
+    $setupExists = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $eap2
+    if (-not $setupExists) {
+        Invoke-Checked 'gh setup 릴리스 생성' { gh release create $setupTag $stable --repo MrDH1004/TileCLI --target main --latest=false --title 'TileCLI 설치 관리자' --notes '한 번만 이걸로 설치하세요. 이후 업데이트는 앱이 자동으로 받습니다(퍼-유저 설치, 관리자 불필요).' | Out-Null }
+    }
+    else {
+        Invoke-Checked 'gh 인스톨러 업로드' { gh release upload $setupTag $stable --repo MrDH1004/TileCLI --clobber | Out-Null }
+    }
+    Write-Host "인스톨러 업로드됨(1회) → https://github.com/MrDH1004/TileCLI/releases/download/$setupTag/TileCLI-Setup.exe"
+}

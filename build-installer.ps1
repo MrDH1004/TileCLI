@@ -1,4 +1,4 @@
-# TileCLI 인스톨러 빌드: Release publish -> Inno Setup 컴파일 -> installer\Output\TileCLI-Setup-x.y.z.exe
+﻿# TileCLI 인스톨러 빌드: Release publish -> Inno Setup 컴파일 -> installer\Output\TileCLI-Setup-x.y.z.exe
 # 사용: powershell -ExecutionPolicy Bypass -File build-installer.ps1
 # 사전: Inno Setup 6 설치 필요 (winget install JRSoftware.InnoSetup)
 $ErrorActionPreference = 'Stop'
