@@ -396,7 +396,35 @@ public sealed class MainForm : Form
         Theme.UseDarkTitleBar(this);
         RefreshList();      // 아이템 강조색 재적용
         RefreshSessions();  // 세션 텍스트색 재적용
+        RethemeContextMenus(); // 컨텍스트 메뉴는 생성 시 색을 캡처 → 새 모드로 재생성
         Invalidate(true);
+    }
+
+    /// <summary>
+    /// 영구 컨텍스트 메뉴(터미널·세션 목록, 트레이)를 현재 테마로 재생성한다.
+    /// ContextMenuStrip은 생성 시 BackColor/ForeColor를 캡처하므로, 모드 전환 시 다시 만들지 않으면
+    /// 이전 테마(예: 다크) 색이 그대로 남아 라이트에서 메뉴만 어둡게 보인다.
+    /// </summary>
+    private void RethemeContextMenus()
+    {
+        if (_listView is not null)
+        {
+            var old = _listView.ContextMenuStrip;
+            _listView.ContextMenuStrip = BuildTerminalContextMenu();
+            old?.Dispose();
+        }
+        if (_sessionView is not null)
+        {
+            var old = _sessionView.ContextMenuStrip;
+            _sessionView.ContextMenuStrip = BuildSessionContextMenu();
+            old?.Dispose();
+        }
+        if (_tray is not null)
+        {
+            var old = _tray.ContextMenuStrip;
+            _tray.ContextMenuStrip = BuildTrayMenu();
+            old?.Dispose();
+        }
     }
 
     private Control BuildTerminalList()
@@ -1065,20 +1093,25 @@ public sealed class MainForm : Form
     // ==== 트레이 ====
     private void SetupTray()
     {
-        var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
-        menu.Items.Add("열기", null, (_, _) => RestoreFromTray());
-        menu.Items.Add("업데이트 확인", null, async (_, _) => await CheckUpdateAsync(silent: false));
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("완전 종료", null, (_, _) => ExitApp());
-
         _tray = new NotifyIcon
         {
             Text = "TileCLI",
             Icon = TryGetAppIcon(),
             Visible = true,   // 창 표시 여부와 무관하게 트레이 아이콘은 항상 유지
-            ContextMenuStrip = menu
+            ContextMenuStrip = BuildTrayMenu()
         };
         _tray.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+    /// <summary>트레이 우클릭 메뉴(현재 테마 색으로 생성).</summary>
+    private ContextMenuStrip BuildTrayMenu()
+    {
+        var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
+        menu.Items.Add("열기", null, (_, _) => RestoreFromTray());
+        menu.Items.Add("업데이트 확인", null, async (_, _) => await CheckUpdateAsync(silent: false));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("완전 종료", null, (_, _) => ExitApp());
+        return menu;
     }
 
     private void HideToTray()
