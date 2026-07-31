@@ -85,6 +85,32 @@ public static class TilingEngine
     }
 
     /// <summary>
+    /// 격자(바둑판) 차수: 창 개수에 맞춘 정사각 격자의 한 변 칸 수(최소 2).
+    /// 1개도 2×2가 되어 셀 크기가 화면의 1/4로 고정된다(전체 화면을 쓰지 않음).
+    /// </summary>
+    public static int GridDim(int count) => Math.Max(2, (int)Math.Ceiling(Math.Sqrt(Math.Max(1, count))));
+
+    /// <summary>
+    /// 영역을 dim×dim 고정 셀로 나눠 좌상단부터 행 우선(row-major) 순서로 반환.
+    /// 경계 반올림으로 인접 셀이 정확히 맞물려 빈틈·겹침이 없고 합집합이 area와 일치한다.
+    /// </summary>
+    public static List<Rectangle> GridCells(int dim, Rectangle area)
+    {
+        var list = new List<Rectangle>(Math.Max(0, dim * dim));
+        if (dim <= 0 || area.Width <= 0 || area.Height <= 0) return list;
+        for (int r = 0; r < dim; r++)
+            for (int c = 0; c < dim; c++)
+            {
+                int x0 = area.X + (int)Math.Round(c * (double)area.Width / dim);
+                int x1 = area.X + (int)Math.Round((c + 1) * (double)area.Width / dim);
+                int y0 = area.Y + (int)Math.Round(r * (double)area.Height / dim);
+                int y1 = area.Y + (int)Math.Round((r + 1) * (double)area.Height / dim);
+                list.Add(Rectangle.FromLTRB(x0, y0, x1, y1));
+            }
+        return list;
+    }
+
+    /// <summary>
     /// [start, start+total) 구간을 parts개로 정수 픽셀 분할. gap>0이면 사이 간격 삽입.
     /// gap==0이면 각 조각 크기 합==total, 마지막 조각이 정확히 start+total에서 끝난다(빈틈/겹침 없음).
     /// </summary>

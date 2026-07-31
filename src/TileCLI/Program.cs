@@ -221,6 +221,26 @@ internal static class SelfTest
 
         Out($"[tiling] {cases} cases, {failures} failures");
 
+        // 3b) 격자(바둑판) 배치 검증: 차수 규칙 + 셀 무겹침·꽉참 + 창 1개=1/4(좌상단)
+        int gridCases = 0, gridFail = 0;
+        foreach (var (n, expDim) in new[] { (1, 2), (2, 2), (3, 2), (4, 2), (5, 3), (9, 3), (10, 4), (16, 4) })
+        {
+            gridCases++;
+            int d = TilingEngine.GridDim(n);
+            if (d != expDim) { gridFail++; Out($"  FAIL [grid] dim({n})={d} != {expDim}"); }
+        }
+        foreach (var area in testAreas)
+            for (int count = 1; count <= 10; count++)
+            {
+                gridCases++;
+                if (!VerifyGrid(count, area, out string gmsg))
+                {
+                    gridFail++;
+                    Out($"  FAIL [grid n={count} area={area.Width}x{area.Height}] {gmsg}");
+                }
+            }
+        Out($"[grid] {gridCases} cases, {gridFail} failures");
+
         // 4) 인접 창 연동(붙여서 조정) 재정렬 좌표 검증
         int rf = 0, rfFail = 0;
         foreach (var (name, ok) in ReflowCases())
@@ -322,7 +342,7 @@ internal static class SelfTest
         catch (Exception ex) { gptFail++; Out($"  FAIL [gpt-session] {ex.Message}"); }
         Out($"[gpt-session] scan {(gptFail == 0 ? "ok" : "FAIL")}");
 
-        bool pass = failures == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0;
+        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0;
         Out(pass ? "RESULT: PASS" : "RESULT: FAIL");
 
         // 콘솔 캡처가 불확실하므로 결과를 파일로도 남김
@@ -397,6 +417,41 @@ internal static class SelfTest
                 new Rectangle(0, 0, 1000, 400), 0);
             yield return ("outer edge: no neighbor shift", u.Count == 0);
         }
+    }
+
+    /// <summary>
+    /// 격자(바둑판) 배치 검증: dim×dim 셀이 무겹침·꽉참으로 영역을 나누고, 첫 셀이 좌상단이며,
+    /// 창 1개일 때 셀이 화면의 1/4(≤ 절반 폭·높이)로 고정되는지(= 전체 화면을 쓰지 않는지) 확인.
+    /// </summary>
+    private static bool VerifyGrid(int count, Rectangle area, out string msg)
+    {
+        int dim = TilingEngine.GridDim(count);
+        if (dim < 2) { msg = $"dim {dim} < 2 (창 1개가 전체 화면을 씀)"; return false; }
+        var cells = TilingEngine.GridCells(dim, area);
+        if (cells.Count != dim * dim) { msg = $"cell count {cells.Count} != {dim * dim}"; return false; }
+
+        long sum = 0;
+        foreach (var c in cells)
+        {
+            if (c.Width <= 0 || c.Height <= 0) { msg = $"non-positive cell {c}"; return false; }
+            if (!area.Contains(c)) { msg = $"cell out of area {c}"; return false; }
+            sum += (long)c.Width * c.Height;
+        }
+        for (int i = 0; i < cells.Count; i++)
+            for (int j = i + 1; j < cells.Count; j++)
+            {
+                var inter = Rectangle.Intersect(cells[i], cells[j]);
+                if (inter.Width > 0 && inter.Height > 0) { msg = $"overlap {cells[i]} & {cells[j]}"; return false; }
+            }
+        if (sum != (long)area.Width * area.Height) { msg = $"union {sum} != area {(long)area.Width * area.Height}"; return false; }
+
+        var first = cells[0];
+        if (first.Left != area.Left || first.Top != area.Top) { msg = $"cell[0] not top-left: {first}"; return false; }
+        if (count == 1 && (first.Width > area.Width / 2 + 1 || first.Height > area.Height / 2 + 1))
+        { msg = $"창 1개 셀이 1/4이 아님: {first.Width}x{first.Height} of {area.Width}x{area.Height}"; return false; }
+
+        msg = "";
+        return true;
     }
 
     /// <summary>

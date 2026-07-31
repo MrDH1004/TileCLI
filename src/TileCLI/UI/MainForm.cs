@@ -1007,7 +1007,7 @@ public sealed class MainForm : Form
         btnH.Location = new Point(58, 26); btnH.Size = new Size(44, 40);
         var btnV = MakeIconButton(IconKind.SplitV, 44, (_, _) => DoArrange(LayoutDirection.Vertical), "세로 분할 (위아래로 쌓기)");
         btnV.Location = new Point(106, 26); btnV.Size = new Size(44, 40);
-        var btnG = MakeIconButton(IconKind.Grid, 44, (_, _) => DoArrange(LayoutDirection.Grid), "그리드 (격자 배치)");
+        var btnG = MakeIconButton(IconKind.Grid, 44, (_, _) => DoFixedGrid(), "격자(바둑판) 배치 — 창 1개면 1/4, 2개면 2칸 (빈 칸은 비움)");
         btnG.Location = new Point(154, 26); btnG.Size = new Size(44, 40);
 
         // 2행: 일괄(전체 최소화 / 다시 보이기 / 정렬 직전 복원)
@@ -1017,9 +1017,6 @@ public sealed class MainForm : Form
         btnShow.Location = new Point(58, 72); btnShow.Size = new Size(44, 40);
         var btnRestore = MakeIconButton(IconKind.RestorePrev, 44, (_, _) => DoBulk(BulkKind.Restore), "정렬 직전 복원 (되돌리기)");
         btnRestore.Location = new Point(106, 72); btnRestore.Size = new Size(44, 40);
-        // 4분할: 2×2 바둑판 고정 배치(창 1개면 1/4). 시작 앵커가 첫 창 위치 결정.
-        var btnQuarters = MakeIconButton(IconKind.Quarters, 44, (_, _) => DoFixedPlacement(SnapZoneControl.ZoneLayout.Quarters), "4분할 (바둑판 2×2 — 한 개면 1/4, 시작 앵커 기준)");
-        btnQuarters.Location = new Point(154, 72); btnQuarters.Size = new Size(44, 40);
 
         _chkLink = new CheckBox { Text = "인접 창 연동", AutoSize = true, Location = new Point(10, 118), Checked = _linkAdjacent };
         _chkLink.CheckedChanged += (_, _) => { if (_applyingConfig) return; LinkAdjacent = _chkLink.Checked; };
@@ -1044,7 +1041,6 @@ public sealed class MainForm : Form
         grp.Controls.Add(btnMin);
         grp.Controls.Add(btnShow);
         grp.Controls.Add(btnRestore);
-        grp.Controls.Add(btnQuarters);
         grp.Controls.Add(_chkLink);
         grp.Controls.Add(_chkWatch);
         return grp;
@@ -1561,6 +1557,33 @@ public sealed class MainForm : Form
         SetStatus($"{DirName(direction)} 정렬: {applied}/{targets.Count}개 배치 (영역 {area.Width}x{area.Height}).");
     }
 
+    /// <summary>
+    /// 격자(바둑판) 배치: 영역을 dim×dim 고정 셀(최소 2×2)로 나눠 좌상단부터 배치한다.
+    /// 채워서 나누는 정렬과 달리 셀 크기가 고정이라 창 1개도 1/4, 2개도 각 1/4(빈 칸은 비움).
+    /// </summary>
+    private void DoFixedGrid()
+    {
+        var targets = GetTargetWindows();
+        if (targets.Count == 0) { SetStatus("정렬할 터미널이 없습니다."); return; }
+
+        var (monitors, span) = GetSelectedMonitors();
+        if (monitors.Count == 0) { SetStatus("모니터를 찾을 수 없습니다."); return; }
+        var area = TilingEngine.ComputeTargetArea(monitors, span);
+        if (area.Width <= 0 || area.Height <= 0) { SetStatus("유효한 배치 영역이 없습니다."); return; }
+
+        int dim = TilingEngine.GridDim(targets.Count); // 최소 2×2 바둑판
+        var cells = TilingEngine.GridCells(dim, area);
+
+        _suppressWatchUntil = Environment.TickCount + 1200;
+        _snapshots.Capture(targets); // '정렬 직전 복원'으로 되돌리기
+        int applied = 0;
+        for (int i = 0; i < targets.Count; i++)
+            if (TilingEngine.MoveWindowVisible(targets[i], cells[i % cells.Count])) applied++;
+
+        RefreshList();
+        SetStatus($"격자(바둑판) {dim}×{dim}: {applied}/{targets.Count}개 (셀 {cells[0].Width}x{cells[0].Height}).");
+    }
+
     private enum BulkKind { Minimize, Show, Restore }
 
     private void DoBulk(BulkKind kind)
@@ -1729,7 +1752,7 @@ public sealed class MainForm : Form
             case HotkeyAction.Auto: DoAuto(); break;
             case HotkeyAction.Horizontal: DoArrange(LayoutDirection.Horizontal); break;
             case HotkeyAction.Vertical: DoArrange(LayoutDirection.Vertical); break;
-            case HotkeyAction.Grid: DoArrange(LayoutDirection.Grid); break;
+            case HotkeyAction.Grid: DoFixedGrid(); break;
         }
     }
 
