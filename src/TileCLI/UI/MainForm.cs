@@ -54,6 +54,8 @@ public sealed class MainForm : Form
     private Label _lblCount = null!;
     private MonitorMapControl _monitorMap = null!;
     private CheckBox _chkSpan = null!;
+    private SnapZoneControl _snapZone = null!;                 // 선택 창을 존에 스냅(3×3 / 가로1/3 / 화면1/4)
+    private Button _zbGrid = null!, _zbThirds = null!, _zbQuarter = null!; // 존 레이아웃 전환 버튼
     private CheckBox _chkLink = null!;   // 인접 창 연동(정렬 그룹에 노출 — 옵션 창에서 이동)
     private Label _statusLabel = null!;
 
@@ -262,6 +264,7 @@ public sealed class MainForm : Form
             Padding = new Padding(0, 8, 0, 0)
         };
         controls.Controls.Add(BuildMonitorGroup());
+        controls.Controls.Add(BuildSnapZoneGroup());
         controls.Controls.Add(BuildArrangeGroup());
         controls.Controls.Add(BuildWorkSetGroup());
         root.Controls.Add(controls, 0, 2);
@@ -397,6 +400,7 @@ public sealed class MainForm : Form
         RefreshList();      // 아이템 강조색 재적용
         RefreshSessions();  // 세션 텍스트색 재적용
         RethemeContextMenus(); // 컨텍스트 메뉴는 생성 시 색을 캡처 → 새 모드로 재생성
+        if (_zbGrid is not null) UpdateZoneModeButtons(); // 존 모드 버튼 활성 강조 재적용
         Invalidate(true);
     }
 
@@ -865,6 +869,95 @@ public sealed class MainForm : Form
         grp.Controls.Add(_monitorMap);
         grp.Controls.Add(_chkSpan);
         return grp;
+    }
+
+    /// <summary>
+    /// 스냅 존: 목록에서 선택한 창을 고른 존(3×3 / 가로 1/3 / 화면 1/4)의 위치·크기로 스냅.
+    /// 창 개수로 영역을 나누는 정렬과 달리, 개별 창을 특정 존에 붙인다(Windows Win+화살표 방식).
+    /// </summary>
+    private GroupBox BuildSnapZoneGroup()
+    {
+        var grp = new DarkGroupBox { Text = "스냅 존 (선택 창)", Size = new Size(190, 176), Margin = new Padding(4) };
+
+        _zbGrid = MakeZoneModeButton("3×3", SnapZoneControl.ZoneLayout.Grid3x3, 10,
+            "3×3 — 각 1/3×1/3 (9칸 위치)");
+        _zbThirds = MakeZoneModeButton("가로⅓", SnapZoneControl.ZoneLayout.Thirds, 68,
+            "가로 1/3 — 전체 높이 3열");
+        _zbQuarter = MakeZoneModeButton("화면¼", SnapZoneControl.ZoneLayout.Quarters, 126,
+            "화면 1/4 — 2×2 사분면");
+        grp.Controls.Add(_zbGrid);
+        grp.Controls.Add(_zbThirds);
+        grp.Controls.Add(_zbQuarter);
+
+        _snapZone = new SnapZoneControl { Location = new Point(10, 54), Size = new Size(170, 108) };
+        _snapZone.ZonePicked += (_, frac) => SnapSelectedToZone(frac);
+        _toolTip.SetToolTip(_snapZone, "목록에서 창을 선택한 뒤 존을 클릭하면 그 위치·크기로 스냅됩니다.");
+        grp.Controls.Add(_snapZone);
+
+        UpdateZoneModeButtons();
+        return grp;
+    }
+
+    private Button MakeZoneModeButton(string text, SnapZoneControl.ZoneLayout mode, int x, string tip)
+    {
+        var b = new Button { Text = text, Location = new Point(x, 22), Size = new Size(54, 26), TabStop = false };
+        Theme.StyleButton(b);
+        _toolTip.SetToolTip(b, tip);
+        b.Click += (_, _) => { _snapZone.ZoneMode = mode; UpdateZoneModeButtons(); };
+        return b;
+    }
+
+    /// <summary>현재 존 레이아웃에 맞춰 모드 버튼의 활성/비활성 색을 갱신.</summary>
+    private void UpdateZoneModeButtons()
+    {
+        void Style(Button b, bool active)
+        {
+            b.BackColor = active ? Theme.AccentDeep : Theme.Bg3;
+            b.ForeColor = active ? Theme.Gold : Theme.Text;
+            b.FlatAppearance.BorderColor = active ? Theme.Gold : Theme.Border;
+        }
+        Style(_zbGrid, _snapZone.ZoneMode == SnapZoneControl.ZoneLayout.Grid3x3);
+        Style(_zbThirds, _snapZone.ZoneMode == SnapZoneControl.ZoneLayout.Thirds);
+        Style(_zbQuarter, _snapZone.ZoneMode == SnapZoneControl.ZoneLayout.Quarters);
+    }
+
+    /// <summary>선택 창(들)을 프랙션 존으로 스냅. 선택 모니터 작업영역에 프랙션을 곱해 픽셀 사각형 산출.</summary>
+    private void SnapSelectedToZone(RectangleF frac)
+    {
+        var sel = GetSelectedTerminals();
+        if (sel.Count == 0) { SetStatus("스냅할 창을 목록에서 선택하세요."); return; }
+
+        var (monitors, span) = GetSelectedMonitors();
+        if (monitors.Count == 0) { SetStatus("모니터를 찾을 수 없습니다."); return; }
+        var area = TilingEngine.ComputeTargetArea(monitors, span);
+        if (area.Width <= 0 || area.Height <= 0) { SetStatus("유효한 배치 영역이 없습니다."); return; }
+
+        // 프랙션 → 픽셀(경계 반올림으로 존끼리 딱 맞고 가장자리에 붙음)
+        int x = area.X + (int)Math.Round(frac.X * area.Width);
+        int y = area.Y + (int)Math.Round(frac.Y * area.Height);
+        int right = area.X + (int)Math.Round((frac.X + frac.Width) * area.Width);
+        int bottom = area.Y + (int)Math.Round((frac.Y + frac.Height) * area.Height);
+        var zone = Rectangle.FromLTRB(x, y, right, bottom);
+        if (zone.Width <= 0 || zone.Height <= 0) { SetStatus("존 크기가 유효하지 않습니다."); return; }
+
+        _suppressWatchUntil = Environment.TickCount + 1200; // 우리 이동이 감시 재배치를 재트리거하지 않게
+        var handles = sel.Select(t => t.Handle).ToList();
+        _snapshots.Capture(handles); // '정렬 직전 복원'으로 되돌리기
+
+        int applied = 0;
+        foreach (var h in handles)
+            if (TilingEngine.MoveWindowVisible(h, zone)) applied++;
+
+        RefreshList();
+        SetStatus($"스냅: {ZoneDesc(frac)} — {applied}/{sel.Count}개 (존 {zone.Width}x{zone.Height}).");
+    }
+
+    /// <summary>존 프랙션을 대략적 위치·크기 라벨로.</summary>
+    private static string ZoneDesc(RectangleF f)
+    {
+        string col = f.X < 0.34f ? "좌" : f.X < 0.66f ? "중" : "우";
+        string row = f.Y < 0.34f ? "상" : f.Y < 0.66f ? "중" : "하";
+        return $"{row}{col} {(int)Math.Round(f.Width * 100)}%×{(int)Math.Round(f.Height * 100)}%";
     }
 
     private GroupBox BuildArrangeGroup()
