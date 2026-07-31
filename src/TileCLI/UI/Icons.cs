@@ -7,7 +7,7 @@ public enum IconKind
 {
     Refresh, CheckEmpty, CheckFilled, Settings, OpenNew, Delete,
     // 정렬
-    AutoArrange, SplitH, SplitV, Grid,
+    AutoArrange, SplitH, SplitV, Grid, Quarters,
     // 일괄
     MinimizeAll, ShowAll, RestorePrev,
     // 작업 세트
@@ -131,6 +131,18 @@ public static class Icons
                 float mx = r.Left + r.Width / 2f, my = r.Top + r.Height / 2f;
                 g.DrawLine(pen, mx, r.Top, mx, r.Bottom);
                 g.DrawLine(pen, r.Left, my, r.Right, my);
+                break;
+            }
+
+            case IconKind.Quarters: // 2x2 바둑판(우상단 칸 채움 — 시작 앵커)
+            {
+                var r = Inset(s, 0.16f);
+                using (var p = Round(r, s * 0.10f)) g.DrawPath(pen, p);
+                float mx = r.Left + r.Width / 2f, my = r.Top + r.Height / 2f;
+                g.DrawLine(pen, mx, r.Top, mx, r.Bottom);
+                g.DrawLine(pen, r.Left, my, r.Right, my);
+                using (var b = new SolidBrush(color)) // 우상단 사분면 채움
+                    g.FillRectangle(b, mx + sw / 2f, r.Top + sw / 2f, r.Right - mx - sw, my - r.Top - sw);
                 break;
             }
 
