@@ -924,8 +924,12 @@ public sealed class MainForm : Form
     /// <summary>선택 창(들)을 프랙션 존으로 스냅. 선택 모니터 작업영역에 프랙션을 곱해 픽셀 사각형 산출.</summary>
     private void SnapSelectedToZone(RectangleF frac)
     {
-        var sel = GetSelectedTerminals();
-        if (sel.Count == 0) { SetStatus("스냅할 창을 목록에서 선택하세요."); return; }
+        // 대상: 하이라이트된 창 우선, 없으면 체크된 창(정렬과 동일 조작)으로 폴백.
+        var handles = GetSelectedTerminals().Select(t => t.Handle).ToList();
+        if (handles.Count == 0)
+            foreach (ListViewItem it in _listView.Items)
+                if (it.Checked && it.Tag is IntPtr ch && !_arrangeExcluded.Contains(ch)) handles.Add(ch);
+        if (handles.Count == 0) { SetStatus("스냅할 창을 목록에서 선택(클릭)하거나 체크하세요."); return; }
 
         var (monitors, span) = GetSelectedMonitors();
         if (monitors.Count == 0) { SetStatus("모니터를 찾을 수 없습니다."); return; }
@@ -941,7 +945,6 @@ public sealed class MainForm : Form
         if (zone.Width <= 0 || zone.Height <= 0) { SetStatus("존 크기가 유효하지 않습니다."); return; }
 
         _suppressWatchUntil = Environment.TickCount + 1200; // 우리 이동이 감시 재배치를 재트리거하지 않게
-        var handles = sel.Select(t => t.Handle).ToList();
         _snapshots.Capture(handles); // '정렬 직전 복원'으로 되돌리기
 
         int applied = 0;
@@ -949,7 +952,7 @@ public sealed class MainForm : Form
             if (TilingEngine.MoveWindowVisible(h, zone)) applied++;
 
         RefreshList();
-        SetStatus($"스냅: {ZoneDesc(frac)} — {applied}/{sel.Count}개 (존 {zone.Width}x{zone.Height}).");
+        SetStatus($"스냅: {ZoneDesc(frac)} — {applied}/{handles.Count}개 (존 {zone.Width}x{zone.Height}).");
     }
 
     /// <summary>존 프랙션을 대략적 위치·크기 라벨로.</summary>

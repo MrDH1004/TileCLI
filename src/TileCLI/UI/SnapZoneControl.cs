@@ -98,9 +98,11 @@ public sealed class SnapZoneControl : Control
                 int idx = _cells.Count;
                 _cells.Add((cell, frac));
 
+                // 유휴 셀도 그룹 배경(Bg2)과 뚜렷이 구분되도록 Hover색 + 진한 테두리 사용
+                // (라이트 테마에서 Bg3=흰색이라 배경과 안 구분되던 문제 보정)
                 bool hover = _hover == idx;
-                Color fill = hover ? Theme.Accent : Theme.Bg3;
-                Color border = hover ? Theme.Gold : Theme.Border;
+                Color fill = hover ? Theme.Accent : Theme.Hover;
+                Color border = hover ? Theme.Gold : Theme.BorderHi;
                 using var path = Round(cell, 5);
                 using var b = new SolidBrush(fill);
                 using var pen = new Pen(border, hover ? 2f : 1f);
