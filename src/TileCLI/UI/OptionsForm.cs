@@ -18,6 +18,7 @@ public sealed class OptionsForm : Form
     private RadioButton _rbLight = null!;
     private ComboBox _cboProfiles = null!;
     private TextBox _txtProfileName = null!;
+    private SnapZoneControl _anchorPick = null!;   // 고정 배치 초기 위치 앵커(3×3)
     private bool _loading;
 
     public OptionsForm(MainForm main)
@@ -29,7 +30,7 @@ public sealed class OptionsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(452, 524);
+        ClientSize = new Size(452, 636);
         ShowInTaskbar = false;
 
         BuildUi();
@@ -98,6 +99,15 @@ public sealed class OptionsForm : Form
         gProfile.Controls.Add(btnApply);
         gProfile.Controls.Add(btnDelete);
 
+        // ── 초기 위치 앵커(고정 배치 첫 창) ──
+        var gAnchor = Card("초기 위치 앵커 (고정 배치 첫 창)", 12, 470, 428, 124);
+        var lblAnchor = new Label { Text = "고정 배치에서 첫 창이 놓일 위치(오른쪽 기준 권장). 행은 4분할에서만 의미.", AutoSize = false, Location = new Point(16, 22), Size = new Size(404, 28) };
+        _anchorPick = new SnapZoneControl { Location = new Point(16, 52), Size = new Size(160, 64), Interactive = true, ZoneMode = SnapZoneControl.ZoneLayout.Grid3x3 };
+        _anchorPick.SetSelectedCell(_main.AnchorCol, _main.AnchorRow);
+        _anchorPick.CellPicked += (_, cr) => { if (!_loading) _main.SetAnchor(cr.col, cr.row); };
+        gAnchor.Controls.Add(lblAnchor);
+        gAnchor.Controls.Add(_anchorPick);
+
         // 닫기
         var btnClose = MakeButton("닫기", 90, (_, _) => Close());
         btnClose.Location = new Point(ClientSize.Width - 106, ClientSize.Height - 38);
@@ -106,6 +116,7 @@ public sealed class OptionsForm : Form
         Controls.Add(gTheme);
         Controls.Add(gHotkey);
         Controls.Add(gProfile);
+        Controls.Add(gAnchor);
         Controls.Add(btnClose);
 
         _loading = false;

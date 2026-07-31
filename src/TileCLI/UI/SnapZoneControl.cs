@@ -5,20 +5,30 @@ using System.Windows.Forms;
 namespace TileCLI.UI;
 
 /// <summary>
-/// 선택 모니터를 존으로 나눠 그리고, 존을 클릭하면 그 존의 "프랙션 사각형"(0~1)을 알려주는 컨트롤.
-/// MainForm이 프랙션을 선택 모니터 작업영역에 곱해 선택 창을 그 위치·크기로 스냅한다.
-/// Windows Win+화살표처럼 "선택한 창"을 특정 존에 붙이는 용도. 3종 레이아웃 지원.
+/// 존/셀 격자를 그리는 컨트롤. 두 용도로 쓰인다 —
+/// 1) 고정 배치 그룹의 "미리보기"(Interactive=false): 현재 폭 모드의 셀과 앵커 셀을 표시.
+/// 2) 옵션의 "초기 위치 앵커"(Interactive=true, Grid3x3): 셀 클릭으로 앵커(열,행)를 고른다.
 /// </summary>
 public sealed class SnapZoneControl : Control
 {
-    public enum ZoneLayout { Grid3x3, Thirds, Quarters }
+    // Full=1(전체), Halves=2열, Thirds=3열, Quarters=2x2, Grid3x3=3x3(앵커 선택용)
+    public enum ZoneLayout { Full, Halves, Thirds, Quarters, Grid3x3 }
 
     private ZoneLayout _layout = ZoneLayout.Grid3x3;
-    private readonly List<(Rectangle rect, RectangleF frac)> _cells = new();
+    private readonly List<(Rectangle rect, int col, int row)> _cells = new();
     private int _hover = -1;
 
-    /// <summary>존 클릭 시 프랙션 사각형(0~1, 선택 모니터 영역 기준)을 전달.</summary>
-    public event EventHandler<RectangleF>? ZonePicked;
+    /// <summary>true면 클릭으로 셀(앵커)을 고를 수 있다. false면 미리보기 전용.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    [System.ComponentModel.Browsable(false)]
+    public bool Interactive { get; set; } = true;
+
+    /// <summary>강조(선택)할 셀. 앵커 표시용. 없으면 -1.</summary>
+    public int SelCol { get; private set; } = -1;
+    public int SelRow { get; private set; } = -1;
+
+    /// <summary>셀 클릭 시 (열,행) 전달(Interactive일 때만).</summary>
+    public event EventHandler<(int col, int row)>? CellPicked;
 
     public SnapZoneControl()
     {
@@ -36,9 +46,24 @@ public sealed class SnapZoneControl : Control
         set { if (_layout != value) { _layout = value; _hover = -1; Invalidate(); } }
     }
 
+    /// <summary>강조할 셀 지정(앵커). 범위 밖이면 강조 없음.</summary>
+    public void SetSelectedCell(int col, int row)
+    {
+        if (SelCol != col || SelRow != row) { SelCol = col; SelRow = row; Invalidate(); }
+    }
+
+    private (int nr, int nc) Dims() => _layout switch
+    {
+        ZoneLayout.Full => (1, 1),
+        ZoneLayout.Halves => (1, 2),
+        ZoneLayout.Thirds => (1, 3),
+        ZoneLayout.Quarters => (2, 2),
+        _ => (3, 3),
+    };
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        int h = HitTest(e.Location);
+        int h = Interactive ? HitTest(e.Location) : -1;
         if (h != _hover) { _hover = h; Cursor = h >= 0 ? Cursors.Hand : Cursors.Default; Invalidate(); }
         base.OnMouseMove(e);
     }
@@ -51,8 +76,16 @@ public sealed class SnapZoneControl : Control
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
-        int h = HitTest(e.Location);
-        if (h >= 0 && h < _cells.Count) ZonePicked?.Invoke(this, _cells[h].frac);
+        if (Interactive)
+        {
+            int h = HitTest(e.Location);
+            if (h >= 0 && h < _cells.Count)
+            {
+                var c = _cells[h];
+                SetSelectedCell(c.col, c.row);
+                CellPicked?.Invoke(this, (c.col, c.row));
+            }
+        }
         base.OnMouseClick(e);
     }
 
@@ -73,21 +106,10 @@ public sealed class SnapZoneControl : Control
         var outer = new Rectangle(pad, pad, ClientSize.Width - 2 * pad, ClientSize.Height - 2 * pad);
         if (outer.Width <= 4 || outer.Height <= 4) return;
 
-        int nr, nc;
-        switch (_layout)
-        {
-            case ZoneLayout.Thirds: nr = 1; nc = 3; break;   // 가로 1/3(전체 높이 3열)
-            case ZoneLayout.Quarters: nr = 2; nc = 2; break; // 화면 1/4(2×2 사분면)
-            default: nr = 3; nc = 3; break;                  // 3×3(각 1/3×1/3)
-        }
-
+        var (nr, nc) = Dims();
         for (int r = 0; r < nr; r++)
             for (int c = 0; c < nc; c++)
             {
-                float fw = 1f / nc, fh = 1f / nr;
-                var frac = new RectangleF(c * fw, r * fh, fw, fh);
-
-                // 인접 존이 어긋나지 않도록 경계를 반올림해 픽셀 정렬
                 int x0 = outer.Left + (int)Math.Round(c * (float)outer.Width / nc);
                 int x1 = outer.Left + (int)Math.Round((c + 1) * (float)outer.Width / nc);
                 int y0 = outer.Top + (int)Math.Round(r * (float)outer.Height / nr);
@@ -96,18 +118,15 @@ public sealed class SnapZoneControl : Control
                 if (cell.Width <= 0 || cell.Height <= 0) continue;
 
                 int idx = _cells.Count;
-                _cells.Add((cell, frac));
+                _cells.Add((cell, c, r));
 
-                // 유휴 셀도 그룹 배경(Bg2)과 뚜렷이 구분되도록 Hover색 + 진한 테두리 사용
-                // (라이트 테마에서 Bg3=흰색이라 배경과 안 구분되던 문제 보정)
                 bool hover = _hover == idx;
-                Color fill = hover ? Theme.Accent : Theme.Hover;
-                Color border = hover ? Theme.Gold : Theme.BorderHi;
+                bool sel = (c == SelCol && r == SelRow); // 앵커/선택 셀
+                Color fill = hover ? Theme.Accent : (sel ? Theme.AccentDeep : Theme.Hover);
+                Color border = (hover || sel) ? Theme.Gold : Theme.BorderHi;
                 using var path = Round(cell, 5);
-                using var b = new SolidBrush(fill);
-                using var pen = new Pen(border, hover ? 2f : 1f);
-                g.FillPath(b, path);
-                g.DrawPath(pen, path);
+                using (var b = new SolidBrush(fill)) g.FillPath(b, path);
+                using (var pen = new Pen(border, (hover || sel) ? 2f : 1f)) g.DrawPath(pen, path);
             }
     }
 
