@@ -54,8 +54,6 @@ public sealed class MainForm : Form
     private Label _lblCount = null!;
     private MonitorMapControl _monitorMap = null!;
     private CheckBox _chkSpan = null!;
-    private SnapZoneControl.ZoneLayout _fixedMode = SnapZoneControl.ZoneLayout.Full; // 옵션 '시작 앵커'의 폭 단위(기본 1)
-    private int _anchorCol = 2, _anchorRow = 0;               // 시작 앵커(기본 우상단, 오른쪽 기준)
     private CheckBox _chkLink = null!;   // 인접 창 연동(정렬 그룹에 노출 — 옵션 창에서 이동)
     private Label _statusLabel = null!;
 
@@ -867,132 +865,6 @@ public sealed class MainForm : Form
         grp.Controls.Add(_monitorMap);
         grp.Controls.Add(_chkSpan);
         return grp;
-    }
-
-    private static (int nr, int nc) ModeDims(SnapZoneControl.ZoneLayout m) => m switch
-    {
-        SnapZoneControl.ZoneLayout.Full => (1, 1),
-        SnapZoneControl.ZoneLayout.Halves => (1, 2),
-        SnapZoneControl.ZoneLayout.Thirds => (1, 3),
-        SnapZoneControl.ZoneLayout.Quarters => (2, 2),
-        _ => (3, 3),
-    };
-
-    /// <summary>3×3 앵커 열(0..2)을 n열 레이아웃의 열 인덱스로 매핑.</summary>
-    private static int MapAnchorCol(int anchorCol, int n)
-        => n <= 1 ? 0 : (int)Math.Round(anchorCol / 2.0 * (n - 1), MidpointRounding.AwayFromZero);
-
-    // ---- 시작 앵커(옵션 창에서 설정·실행) ----
-    /// <summary>시작 앵커. 열/행 0..2, 기본 우상단(오른쪽 기준).</summary>
-    public int AnchorCol => _anchorCol;
-    public int AnchorRow => _anchorRow;
-    /// <summary>옵션 '시작 앵커'의 현재 폭 단위.</summary>
-    public SnapZoneControl.ZoneLayout FixedMode => _fixedMode;
-
-    public void SetAnchor(int col, int row)
-    {
-        _anchorCol = Math.Clamp(col, 0, 2);
-        _anchorRow = Math.Clamp(row, 0, 2);
-        SaveConfig();
-    }
-
-    /// <summary>옵션 '시작 앵커'의 폭 버튼이 호출: 폭 모드 기억 + 선택/체크 창을 그 폭으로 배치.</summary>
-    public void ApplyFixedPlacement(SnapZoneControl.ZoneLayout mode)
-    {
-        _fixedMode = mode;
-        DoFixedPlacement(mode);
-        SaveConfig();
-    }
-
-    /// <summary>미리보기 컨트롤을 지정 폭 모드 + 현재 앵커로 설정(옵션 창이 호출).</summary>
-    public void ConfigurePreview(SnapZoneControl preview, SnapZoneControl.ZoneLayout mode)
-    {
-        preview.ZoneMode = mode;
-        var (nr, nc) = ModeDims(mode);
-        int pc = MapAnchorCol(_anchorCol, nc);
-        int pr = nr <= 1 ? 0 : (_anchorRow >= 2 ? 1 : 0);
-        preview.SetSelectedCell(pc, pr);
-    }
-
-    /// <summary>선택/체크 창을 고정 셀에 배치. 첫 창=앵커 셀, 이후는 옆 셀. 창 1개도 1/N·1/4.</summary>
-    private void DoFixedPlacement(SnapZoneControl.ZoneLayout mode)
-    {
-        var handles = GetSelectedTerminals().Select(t => t.Handle).ToList();
-        if (handles.Count == 0)
-            foreach (ListViewItem it in _listView.Items)
-                if (it.Checked && it.Tag is IntPtr ch && !_arrangeExcluded.Contains(ch)) handles.Add(ch);
-        if (handles.Count == 0) { SetStatus("배치할 창을 목록에서 선택(클릭)하거나 체크하세요."); return; }
-
-        var (monitors, span) = GetSelectedMonitors();
-        if (monitors.Count == 0) { SetStatus("모니터를 찾을 수 없습니다."); return; }
-        var area = TilingEngine.ComputeTargetArea(monitors, span);
-        if (area.Width <= 0 || area.Height <= 0) { SetStatus("유효한 배치 영역이 없습니다."); return; }
-
-        var cells = BuildFixedCells(mode, area);
-        if (cells.Count == 0) { SetStatus("배치 셀을 만들 수 없습니다."); return; }
-
-        _suppressWatchUntil = Environment.TickCount + 1200;
-        _snapshots.Capture(handles); // '정렬 직전 복원'으로 되돌리기
-
-        int applied = 0;
-        for (int i = 0; i < handles.Count; i++)
-            if (TilingEngine.MoveWindowVisible(handles[i], cells[i % cells.Count])) applied++;
-
-        RefreshList();
-        SetStatus($"고정 배치 {FixedModeName(mode)}: {applied}/{handles.Count}개 (셀 {cells[0].Width}x{cells[0].Height}, 앵커 {AnchorName()}).");
-    }
-
-    /// <summary>모드별 고정 셀을 앵커 기준 순서로 생성(첫 셀=앵커, 오른쪽 기준 채움).</summary>
-    private List<Rectangle> BuildFixedCells(SnapZoneControl.ZoneLayout mode, Rectangle a)
-    {
-        var list = new List<Rectangle>();
-        Rectangle Col(int c, int n)
-        {
-            int x0 = a.X + (int)Math.Round(c * (double)a.Width / n);
-            int x1 = a.X + (int)Math.Round((c + 1) * (double)a.Width / n);
-            return Rectangle.FromLTRB(x0, a.Top, x1, a.Bottom);
-        }
-        Rectangle Quad(int qc, int qr)
-        {
-            int x0 = a.X + (int)Math.Round(qc * (double)a.Width / 2);
-            int x1 = a.X + (int)Math.Round((qc + 1) * (double)a.Width / 2);
-            int y0 = a.Y + (int)Math.Round(qr * (double)a.Height / 2);
-            int y1 = a.Y + (int)Math.Round((qr + 1) * (double)a.Height / 2);
-            return Rectangle.FromLTRB(x0, y0, x1, y1);
-        }
-
-        if (mode == SnapZoneControl.ZoneLayout.Full) { list.Add(a); return list; }
-
-        if (mode == SnapZoneControl.ZoneLayout.Quarters)
-        {
-            int sc = _anchorCol == 0 ? 0 : 1;   // 앵커 열 → 좌/우 사분면
-            int sr = _anchorRow >= 2 ? 1 : 0;   // 앵커 행 → 상/하 사분면
-            var seq = new (int c, int r)[] { (sc, sr), (1 - sc, sr), (sc, 1 - sr), (1 - sc, 1 - sr) };
-            foreach (var (c, r) in seq) list.Add(Quad(c, r));
-            return list;
-        }
-
-        int n = mode == SnapZoneControl.ZoneLayout.Halves ? 2 : 3;
-        int start = MapAnchorCol(_anchorCol, n);
-        for (int i = start; i >= 0; i--) list.Add(Col(i, n));    // 앵커 열부터 왼쪽으로
-        for (int i = start + 1; i < n; i++) list.Add(Col(i, n)); // 남은 오른쪽 열
-        return list;
-    }
-
-    private static string FixedModeName(SnapZoneControl.ZoneLayout m) => m switch
-    {
-        SnapZoneControl.ZoneLayout.Full => "1(전체)",
-        SnapZoneControl.ZoneLayout.Halves => "2(1/2)",
-        SnapZoneControl.ZoneLayout.Thirds => "3(1/3)",
-        SnapZoneControl.ZoneLayout.Quarters => "4분할",
-        _ => "?",
-    };
-
-    private string AnchorName()
-    {
-        string col = _anchorCol == 0 ? "좌" : _anchorCol == 1 ? "중" : "우";
-        string row = _anchorRow == 0 ? "상" : _anchorRow == 1 ? "중" : "하";
-        return $"{row}{col}";
     }
 
     private GroupBox BuildArrangeGroup()
@@ -1822,9 +1694,6 @@ public sealed class MainForm : Form
         _config.SetString("GptSessionsDir", _gptSessionsDir);   // GPT 세션 폴더(빈값=~/.codex/sessions)
         _config.SetString("GptResumeCmd", _gptResumeCmd);       // GPT 이어서 복구 명령
         _config.SetString("GptNewCmd", _gptNewCmd);             // GPT 새 세션 명령
-        _config.SetString("FixedMode", _fixedMode.ToString());  // 고정 배치 폭 모드
-        _config.SetString("AnchorCol", _anchorCol.ToString());  // 초기 위치 앵커 열
-        _config.SetString("AnchorRow", _anchorRow.ToString());  // 초기 위치 앵커 행
 
         try { _config.Save(); }
         catch (Exception ex) { SetStatus($"config.env 저장 실패: {ex.Message}"); }
@@ -1867,11 +1736,6 @@ public sealed class MainForm : Form
 
             // 선택 프로파일 복원
             _selectedProfile = _config.GetString("Profile") ?? string.Empty;
-
-            // 고정 배치 폭 모드 · 초기 위치 앵커 복원
-            if (Enum.TryParse<SnapZoneControl.ZoneLayout>(_config.GetString("FixedMode"), out var fm)) _fixedMode = fm;
-            if (int.TryParse(_config.GetString("AnchorCol"), out var ac)) _anchorCol = Math.Clamp(ac, 0, 2);
-            if (int.TryParse(_config.GetString("AnchorRow"), out var ar)) _anchorRow = Math.Clamp(ar, 0, 2);
         }
         finally { _applyingConfig = false; }
     }

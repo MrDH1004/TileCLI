@@ -18,10 +18,6 @@ public sealed class OptionsForm : Form
     private RadioButton _rbLight = null!;
     private ComboBox _cboProfiles = null!;
     private TextBox _txtProfileName = null!;
-    private SnapZoneControl _anchorPick = null!;   // 시작 앵커(3×3, 첫 창 위치)
-    private SnapZoneControl _fixedPreview = null!; // 폭 모드 + 앵커 미리보기
-    private Button _owFull = null!, _owHalf = null!, _owThird = null!; // 폭 단위 버튼
-    private SnapZoneControl.ZoneLayout _fixedW = SnapZoneControl.ZoneLayout.Full;
     private bool _loading;
 
     public OptionsForm(MainForm main)
@@ -33,7 +29,7 @@ public sealed class OptionsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(452, 716);
+        ClientSize = new Size(452, 524);
         ShowInTaskbar = false;
 
         BuildUi();
@@ -102,30 +98,6 @@ public sealed class OptionsForm : Form
         gProfile.Controls.Add(btnApply);
         gProfile.Controls.Add(btnDelete);
 
-        // ── 시작 앵커(폭 단위 배치 + 첫 창 위치) ──
-        _fixedW = _main.FixedMode;
-        var gAnchor = Card("시작 앵커", 12, 470, 428, 196);
-        var lblAnchor = new Label { Text = "선택/체크한 창을 폭 단위로 배치하고, 첫 창이 놓일 위치(앵커)를 정합니다. 오른쪽 기준 권장.", AutoSize = false, Location = new Point(16, 22), Size = new Size(404, 32) };
-        var lblW = new Label { Text = "폭", AutoSize = true, Location = new Point(16, 62) };
-        _owFull = MakeWidthButton("1", SnapZoneControl.ZoneLayout.Full, 42, 58, "폭 1/1 — 전체 화면");
-        _owHalf = MakeWidthButton("2", SnapZoneControl.ZoneLayout.Halves, 76, 58, "폭 1/2 — 2열");
-        _owThird = MakeWidthButton("3", SnapZoneControl.ZoneLayout.Thirds, 110, 58, "폭 1/3 — 3열");
-        var lblA = new Label { Text = "앵커(첫 창)", AutoSize = true, Location = new Point(16, 94) };
-        _anchorPick = new SnapZoneControl { Location = new Point(16, 114), Size = new Size(150, 72), Interactive = true, ZoneMode = SnapZoneControl.ZoneLayout.Grid3x3 };
-        _anchorPick.SetSelectedCell(_main.AnchorCol, _main.AnchorRow);
-        _anchorPick.CellPicked += (_, cr) => { if (!_loading) { _main.SetAnchor(cr.col, cr.row); UpdateAnchorPreview(); } };
-        var lblP = new Label { Text = "미리보기", AutoSize = true, Location = new Point(180, 94) };
-        _fixedPreview = new SnapZoneControl { Location = new Point(180, 114), Size = new Size(232, 72), Interactive = false };
-        gAnchor.Controls.Add(lblAnchor);
-        gAnchor.Controls.Add(lblW);
-        gAnchor.Controls.Add(_owFull); gAnchor.Controls.Add(_owHalf); gAnchor.Controls.Add(_owThird);
-        gAnchor.Controls.Add(lblA);
-        gAnchor.Controls.Add(_anchorPick);
-        gAnchor.Controls.Add(lblP);
-        gAnchor.Controls.Add(_fixedPreview);
-        UpdateWidthButtons();
-        UpdateAnchorPreview();
-
         // 닫기
         var btnClose = MakeButton("닫기", 90, (_, _) => Close());
         btnClose.Location = new Point(ClientSize.Width - 106, ClientSize.Height - 38);
@@ -134,7 +106,6 @@ public sealed class OptionsForm : Form
         Controls.Add(gTheme);
         Controls.Add(gHotkey);
         Controls.Add(gProfile);
-        Controls.Add(gAnchor);
         Controls.Add(btnClose);
 
         _loading = false;
@@ -148,42 +119,6 @@ public sealed class OptionsForm : Form
         var b = new RoundedButton { Text = text, Width = width, Height = 28 };
         b.Click += onClick;
         return b;
-    }
-
-    private Button MakeWidthButton(string text, SnapZoneControl.ZoneLayout mode, int x, int y, string tip)
-    {
-        var b = new Button { Text = text, Location = new Point(x, y), Size = new Size(30, 26), TabStop = false };
-        Theme.StyleButton(b);
-        b.Click += (_, _) =>
-        {
-            if (_loading) return;
-            _fixedW = mode;
-            _main.ApplyFixedPlacement(mode); // 메인 창의 선택/체크 창을 이 폭으로 배치
-            UpdateWidthButtons();
-            UpdateAnchorPreview();
-        };
-        return b;
-    }
-
-    /// <summary>폭 버튼 활성/비활성 강조.</summary>
-    private void UpdateWidthButtons()
-    {
-        void Style(Button b, bool active)
-        {
-            b.BackColor = active ? Theme.AccentDeep : Theme.Bg3;
-            b.ForeColor = active ? Theme.Gold : Theme.Text;
-            b.FlatAppearance.BorderColor = active ? Theme.Gold : Theme.Border;
-        }
-        Style(_owFull, _fixedW == SnapZoneControl.ZoneLayout.Full);
-        Style(_owHalf, _fixedW == SnapZoneControl.ZoneLayout.Halves);
-        Style(_owThird, _fixedW == SnapZoneControl.ZoneLayout.Thirds);
-    }
-
-    /// <summary>앵커 강조 + 미리보기(현재 폭 모드 + 앵커) 갱신.</summary>
-    private void UpdateAnchorPreview()
-    {
-        _anchorPick.SetSelectedCell(_main.AnchorCol, _main.AnchorRow);
-        _main.ConfigurePreview(_fixedPreview, _fixedW);
     }
 
     /// <summary>프로파일 목록 재적재(선택 유지).</summary>
@@ -208,8 +143,6 @@ public sealed class OptionsForm : Form
         _loading = false;
         Theme.Apply(this);
         if (IsHandleCreated) Theme.UseDarkTitleBar(this);
-        UpdateWidthButtons();   // 폭 버튼 강조 재적용
-        UpdateAnchorPreview();  // 미리보기 재적용
         Invalidate(true);
     }
 }
