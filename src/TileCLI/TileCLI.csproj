@@ -10,7 +10,7 @@
     <AssemblyName>TileCLI</AssemblyName>
     <RootNamespace>TileCLI</RootNamespace>
     <!-- 버전(릴리스 스크립트가 자동 증가). 타이틀·자동 업데이트 비교에 사용 -->
-    <Version>1.0.6</Version>
+    <Version>1.0.7</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
