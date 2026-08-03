@@ -102,10 +102,8 @@ public static class ClaudeSessionService
     {
         try
         {
-            int n = 0;
-            foreach (var line in File.ReadLines(file.FullName))
+            foreach (var line in ReadHeadLines(file.FullName, MaxLinesToScan))
             {
-                if (++n > MaxLinesToScan) break;
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 try
                 {
@@ -195,6 +193,24 @@ public static class ClaudeSessionService
         catch { return Array.Empty<string>(); }
     }
 
+    /// <summary>
+    /// 세션 jsonl 앞부분을 공유 모드로 읽는다. File.ReadLines는 FileShare.Read라서 지금 실행 중인
+    /// CLI가 쓰고 있는 파일에서 IOException이 나고, 그 결과 "가장 최근 = 지금 돌고 있는" 세션이
+    /// 목록·창 분류에서 통째로 빠졌다(실측: codex 활성 세션이 스캔에서 누락).
+    /// </summary>
+    private static IEnumerable<string> ReadHeadLines(string path, int maxLines)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(fs);
+        for (int i = 0; i < maxLines; i++)
+        {
+            string? line = reader.ReadLine();
+            if (line is null) yield break;
+            yield return line;
+        }
+    }
+
     private static FileInfo? NewestTranscript(string dir)
     {
         try
@@ -216,10 +232,8 @@ public static class ClaudeSessionService
         string? title = null;
         try
         {
-            int n = 0;
-            foreach (var line in File.ReadLines(file.FullName))
+            foreach (var line in ReadHeadLines(file.FullName, MaxLinesToScan))
             {
-                if (++n > MaxLinesToScan) break;
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
                 try

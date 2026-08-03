@@ -20,9 +20,13 @@ public sealed class TerminalWindow
     {
         TerminalKind.Claude => "Claude",
         TerminalKind.Gpt => "GPT",
+        TerminalKind.Ai => "AI(미상)",
         TerminalKind.Plain => "서버/일반",
         _ => "-"
     };
+
+    /// <summary>정렬 대상으로 볼 AI CLI 창인가(종류 미상 포함).</summary>
+    public bool IsAi => Kind is TerminalKind.Claude or TerminalKind.Gpt or TerminalKind.Ai;
 
     /// <summary>목록 표시용 라벨.</summary>
     public string DisplayTitle =>

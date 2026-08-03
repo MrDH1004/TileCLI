@@ -1198,11 +1198,12 @@ public sealed class MainForm : Form
 
         var previouslyChecked = GetCheckedHandles();
 
-        _terminals = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers);
+        _terminals = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers,
+            string.IsNullOrWhiteSpace(_gptSessionsDir) ? null : _gptSessionsDir);
 
-        // 판별된 CLI만 표시: 마커로 Claude/GPT로 확정된 창만 남기고 판별 불가(일반) 창은 제외
+        // 판별된 CLI만 표시: AI 창(종류 미상 포함)만 남기고 일반/서버 창은 제외
         if (_claudeGptOnly)
-            _terminals = _terminals.Where(t => t.Kind is TerminalKind.Claude or TerminalKind.Gpt).ToList();
+            _terminals = _terminals.Where(t => t.IsAi).ToList();
 
         // 사용자가 드래그로 정한 순서 유지: 알려진 핸들은 그 순서대로, 신규 창은 탐지 순서로 뒤에
         if (_windowOrder.Count > 0)
@@ -1223,7 +1224,7 @@ public sealed class MainForm : Form
         // 실제 정렬 제외 집합 = 수동 제외 ∪ (AI아님 옵션이면 Claude/GPT 아닌 창)
         _arrangeExcluded.Clear();
         foreach (var t in _terminals)
-            if (_excluded.Contains(t.Handle) || (_excludeNonAi && t.Kind is not (TerminalKind.Claude or TerminalKind.Gpt)))
+            if (_excluded.Contains(t.Handle) || (_excludeNonAi && !t.IsAi))
                 _arrangeExcluded.Add(t.Handle);
 
         _listView.BeginUpdate();
@@ -1241,6 +1242,7 @@ public sealed class MainForm : Form
                 {
                     TerminalKind.Claude => Theme.Claude,
                     TerminalKind.Gpt => Theme.Gpt,
+                    TerminalKind.Ai => Theme.Text,   // AI지만 종류 미상: 강조색 없이 본문색
                     _ => Theme.TextDim
                 };
             item.Checked = previouslyChecked.Contains(t.Handle);
@@ -1261,9 +1263,11 @@ public sealed class MainForm : Form
         FitTerminalColumns();
         int claudeCount = _terminals.Count(t => t.Kind == TerminalKind.Claude);
         int gptCount = _terminals.Count(t => t.Kind == TerminalKind.Gpt);
-        _lblCount.Text = $"터미널 {_terminals.Count}개 (Claude {claudeCount}, GPT {gptCount})";
+        int aiCount = _terminals.Count(t => t.Kind == TerminalKind.Ai);
+        string kinds = $"Claude {claudeCount}, GPT {gptCount}" + (aiCount > 0 ? $", AI {aiCount}" : "");
+        _lblCount.Text = $"터미널 {_terminals.Count}개 ({kinds})";
         UpdateToggleAllButton();
-        SetStatus($"목록 갱신: {_terminals.Count}개 탐지 (Claude {claudeCount}, GPT {gptCount}).");
+        SetStatus($"목록 갱신: {_terminals.Count}개 탐지 ({kinds}).");
     }
 
     private void RefreshProfiles()

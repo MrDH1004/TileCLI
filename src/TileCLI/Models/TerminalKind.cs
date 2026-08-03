@@ -16,5 +16,8 @@ public enum TerminalKind
     Gpt,
 
     /// <summary>클로드/GPT가 아닌 일반/서버 콘솔 창.</summary>
-    Plain
+    Plain,
+
+    /// <summary>AI CLI 창이지만 Claude/GPT를 특정하지 못함(작업 중 제목이 스피너로 바뀐 창).</summary>
+    Ai
 }

@@ -188,7 +188,8 @@ internal static class SelfTest
         var terminals = WindowDiscovery.Discover();
         int claudeN = terminals.Count(x => x.Kind == Models.TerminalKind.Claude);
         int gptN = terminals.Count(x => x.Kind == Models.TerminalKind.Gpt);
-        Out($"[terminals] {terminals.Count} found (claude {claudeN}, gpt {gptN})");
+        int aiN = terminals.Count(x => x.Kind == Models.TerminalKind.Ai);
+        Out($"[terminals] {terminals.Count} found (claude {claudeN}, gpt {gptN}, ai {aiN})");
         foreach (var t in terminals)
             Out($"  - [{t.KindLabel}] {t}");
 
