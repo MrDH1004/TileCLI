@@ -35,8 +35,15 @@ public sealed class MainForm : Form
     private List<string> _claudeTitleMarkers = new(); // 클로드 창 제목 접두 마커
     private List<string> _gptTitleMarkers = new();    // GPT 창 제목 접두 마커
     private string _gptSessionsDir = "";               // GPT 세션 폴더(빈값 → ~/.codex/sessions)
-    private string _gptResumeCmd = "codex --continue"; // GPT 세션 이어서 복구 명령
+    // GPT 세션 이어서 복구 명령. {id}는 세션 UUID로 치환된다(codex 0.146.0 기준 `codex resume <SESSION_ID>`).
+    private string _gptResumeCmd = GptResumeDefault;
     private string _gptNewCmd = "codex";               // GPT 세션 새로 열기 명령
+
+    private const string GptResumeDefault = "codex resume {id}";
+    private const string GptResumeLast = "codex resume --last"; // 세션 id를 못 구했을 때 폴백
+    // codex CLI에 없던 옛 기본값. 그대로 실행하면 "unexpected argument '--continue'"로 죽으므로
+    // 저장된 설정에서 발견되면 조용히 현재 기본값으로 갈아끼운다.
+    private const string GptResumeLegacy = "codex --continue";
     private List<MonitorTarget> _monitors = new();
     private List<LayoutProfile> _profiles = new();
     private LayoutDirection _currentDirection = LayoutDirection.Grid;
@@ -109,6 +116,8 @@ public sealed class MainForm : Form
         if (_gptTitleMarkers.Count == 0) _gptTitleMarkers = new List<string>(WindowDiscovery.DefaultGptTitleMarkers);
         _gptSessionsDir = _config.GetString("GptSessionsDir") ?? "";
         var gptResume = _config.GetString("GptResumeCmd"); if (!string.IsNullOrWhiteSpace(gptResume)) _gptResumeCmd = gptResume;
+        if (string.Equals(_gptResumeCmd.Trim(), GptResumeLegacy, StringComparison.OrdinalIgnoreCase))
+            _gptResumeCmd = GptResumeDefault; // 동작하지 않는 옛 값 마이그레이션
         var gptNew = _config.GetString("GptNewCmd"); if (!string.IsNullOrWhiteSpace(gptNew)) _gptNewCmd = gptNew;
         if (string.Equals(_config.GetString("Theme"), "Light", StringComparison.OrdinalIgnoreCase))
             Theme.SetMode(ThemeMode.Light);
@@ -1505,7 +1514,7 @@ public sealed class MainForm : Form
         foreach (var s in sel)
         {
             // 종류별 이어서-복구 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
-            string cmd = s.Kind == TerminalKind.Gpt ? _gptResumeCmd : "claude -c";
+            string cmd = s.Kind == TerminalKind.Gpt ? BuildGptResumeCmd(s) : "claude -c";
             string? title = s.Kind == TerminalKind.Gpt ? null : "✳ " + SessionWindowTitle(s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
@@ -1513,6 +1522,21 @@ public sealed class MainForm : Form
         SetStatus(ok == sel.Count
             ? $"세션 복구 실행: {ok}개"
             : $"세션 복구: {ok}/{sel.Count}개 (실패: {lastErr})");
+    }
+
+    /// <summary>
+    /// GPT 세션 이어하기 명령을 만든다. 설정값의 {id}를 그 세션의 UUID로 치환하고,
+    /// id를 못 구했으면 picker 대신 최근 세션을 잇는 형태로 폴백한다.
+    /// </summary>
+    private string BuildGptResumeCmd(ClaudeSession s)
+    {
+        if (!_gptResumeCmd.Contains("{id}", StringComparison.OrdinalIgnoreCase))
+            return _gptResumeCmd; // 사용자가 직접 지정한 형태는 그대로 존중
+
+        string id = s.ResumeId;
+        return id.Length > 0
+            ? _gptResumeCmd.Replace("{id}", id, StringComparison.OrdinalIgnoreCase)
+            : GptResumeLast;
     }
 
     /// <summary>선택한 세션의 폴더에서 새 세션을 연다(Claude=claude, GPT=config 명령).</summary>

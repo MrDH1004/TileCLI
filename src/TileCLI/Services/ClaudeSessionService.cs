@@ -29,12 +29,18 @@ public static class ClaudeSessionService
     /// Claude(~/.claude/projects) + GPT(gptSessionsDir, 기본 ~/.codex/sessions) 최근 세션을
     /// cwd별 최신 1개씩 추려 LastActive 내림차순 최대 max개 반환. hiddenCwds는 제외.
     /// </summary>
-    public static List<ClaudeSession> GetRecent(int max = 20, IEnumerable<string>? hiddenCwds = null, string? gptSessionsDir = null)
+    /// <param name="includeSubagent">
+    /// codex가 서브에이전트로 파생시킨 세션까지 포함할지. 기본은 제외 — 사용자가 "이어하기"로 열
+    /// 대상이 아니기 때문이다(codex resume picker도 비대화 세션을 기본 제외한다).
+    /// 창 분류용 힌트처럼 "그 폴더에서 codex가 활동했다"는 사실만 필요할 때는 true로 켠다.
+    /// </param>
+    public static List<ClaudeSession> GetRecent(int max = 20, IEnumerable<string>? hiddenCwds = null,
+        string? gptSessionsDir = null, bool includeSubagent = false)
     {
         var hidden = new HashSet<string>(hiddenCwds ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
         var all = new List<ClaudeSession>();
         all.AddRange(ScanClaude(hidden));
-        all.AddRange(ScanGpt(gptSessionsDir, hidden));
+        all.AddRange(ScanGpt(gptSessionsDir, hidden, includeSubagent));
         all.Sort((a, b) => b.LastActive.CompareTo(a.LastActive));
         if (all.Count > max) all.RemoveRange(max, all.Count - max);
         return all;
@@ -64,7 +70,7 @@ public static class ClaudeSessionService
     }
 
     /// <summary>GPT 세션 디렉토리 재귀 스캔(*.jsonl에서 cwd 탐색, cwd별 최신 1개, Kind=Gpt).</summary>
-    private static List<ClaudeSession> ScanGpt(string? dir, HashSet<string> hidden)
+    private static List<ClaudeSession> ScanGpt(string? dir, HashSet<string> hidden, bool includeSubagent)
     {
         var result = new List<ClaudeSession>();
         string root = string.IsNullOrWhiteSpace(dir) ? GptSessionsRoot : dir!;
@@ -77,9 +83,10 @@ public static class ClaudeSessionService
         var byCwd = new Dictionary<string, ClaudeSession>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
         {
-            string? cwd; DateTime last;
-            try { var fi = new FileInfo(file); cwd = FindCwd(fi); last = fi.LastWriteTime; }
+            string? cwd; DateTime last; bool isSubagent;
+            try { var fi = new FileInfo(file); (cwd, isSubagent) = ReadGptMeta(fi); last = fi.LastWriteTime; }
             catch { continue; }
+            if (isSubagent && !includeSubagent) continue;
             if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) continue;
             if (hidden.Contains(cwd)) continue;
 
@@ -97,8 +104,12 @@ public static class ClaudeSessionService
         return result;
     }
 
-    /// <summary>jsonl 앞부분(최대 MaxLinesToScan줄)에서 "cwd" 문자열 속성을 재귀 탐색(CLI 형식 무관).</summary>
-    private static string? FindCwd(FileInfo file)
+    /// <summary>
+    /// codex 세션 jsonl 앞부분에서 cwd와 "서브에이전트가 파생시킨 세션인지"를 함께 읽는다.
+    /// 관측된 형식: 첫 줄이 <c>{"type":"session_meta","payload":{"cwd":…,"source":{"subagent":{…}}}}</c>.
+    /// session_meta를 못 찾으면 형식 무관 cwd 재귀 탐색으로 폴백한다.
+    /// </summary>
+    private static (string? Cwd, bool IsSubagent) ReadGptMeta(FileInfo file)
     {
         try
         {
@@ -108,14 +119,30 @@ public static class ClaudeSessionService
                 try
                 {
                     using var doc = JsonDocument.Parse(line);
-                    var cwd = FindCwdIn(doc.RootElement);
-                    if (!string.IsNullOrWhiteSpace(cwd)) return cwd;
+                    var root = doc.RootElement;
+
+                    if (root.TryGetProperty("type", out var typeEl) &&
+                        typeEl.ValueKind == JsonValueKind.String && typeEl.GetString() == "session_meta" &&
+                        root.TryGetProperty("payload", out var payload) &&
+                        payload.ValueKind == JsonValueKind.Object)
+                    {
+                        bool sub = payload.TryGetProperty("source", out var src) &&
+                                   src.ValueKind == JsonValueKind.Object &&
+                                   src.TryGetProperty("subagent", out _);
+                        string? cwd = payload.TryGetProperty("cwd", out var cwdEl) &&
+                                      cwdEl.ValueKind == JsonValueKind.String
+                            ? cwdEl.GetString() : FindCwdIn(root);
+                        return (cwd, sub);
+                    }
+
+                    var any = FindCwdIn(root);
+                    if (!string.IsNullOrWhiteSpace(any)) return (any, false);
                 }
                 catch { /* 라인 파싱 실패 무시 */ }
             }
         }
         catch { /* 파일 읽기 실패 */ }
-        return null;
+        return (null, false);
     }
 
     private static string? FindCwdIn(JsonElement el)

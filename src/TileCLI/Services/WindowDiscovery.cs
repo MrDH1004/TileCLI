@@ -209,7 +209,9 @@ public static class WindowDiscovery
             // 마커·캐시가 모두 실패한 뒤의 마지막 폴백이라, 틀려도 AI 창끼리의 오분류에 그친다
             // (이 신호가 없으면 그 창은 일반 창으로 떨어져 목록에서 아예 빠진다).
             var best = new Dictionary<string, (TerminalKind Kind, DateTime At)>(StringComparer.OrdinalIgnoreCase);
-            foreach (var s in ClaudeSessionService.GetRecent(SessionHintMax, null, gptSessionsDir))
+            // 서브에이전트 세션도 포함한다 — 이어하기 대상은 아니어도 "그 폴더에서 codex가 돌았다"는
+            // 증거로는 유효하고, 빼면 활동 시각이 옛것으로 밀려 창 분류가 뒤집힌다.
+            foreach (var s in ClaudeSessionService.GetRecent(SessionHintMax, null, gptSessionsDir, includeSubagent: true))
             {
                 string name = FolderName(s.Cwd);
                 if (name.Length == 0) continue;

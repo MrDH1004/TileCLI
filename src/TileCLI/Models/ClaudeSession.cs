@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace TileCLI.Models;
 
 /// <summary>
@@ -39,4 +41,19 @@ public sealed class ClaudeSession
     /// <summary>목록 첫 열 라벨(제목 우선, 없으면 폴더명).</summary>
     public string DisplayLabel =>
         string.IsNullOrWhiteSpace(Title) ? ProjectName : Title;
+
+    /// <summary>
+    /// 재개 명령에 넘길 세션 식별자(UUID). Claude는 파일명이 곧 세션 UUID지만,
+    /// codex 파일명은 rollout-&lt;타임스탬프&gt;-&lt;uuid&gt; 라 뒤쪽 UUID만 잘라내야 한다
+    /// (실측: 파일명 뒤 UUID = session_meta의 payload.id). 못 찾으면 빈 문자열.
+    /// </summary>
+    public string ResumeId
+    {
+        get
+        {
+            var m = Regex.Match(SessionId,
+                "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+            return m.Success ? m.Value : string.Empty;
+        }
+    }
 }
