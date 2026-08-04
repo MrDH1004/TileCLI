@@ -13,6 +13,9 @@ public static class ClaudeSessionService
 {
     private const int MaxLinesToScan = 60; // cwd/summary는 파일 앞부분에 있음
 
+    /// <summary>터미널에서 실행된 codex 세션의 originator 값. 데스크톱 앱은 "Codex Desktop"으로 기록된다.</summary>
+    private const string TuiOriginator = "codex-tui";
+
     /// <summary>클로드 projects 루트 경로(~\.claude\projects).</summary>
     public static string ProjectsRoot =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
@@ -83,9 +86,13 @@ public static class ClaudeSessionService
         var byCwd = new Dictionary<string, ClaudeSession>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
         {
-            string? cwd; DateTime last; bool isSubagent;
-            try { var fi = new FileInfo(file); (cwd, isSubagent) = ReadGptMeta(fi); last = fi.LastWriteTime; }
+            string? cwd; DateTime last; bool isSubagent; string? originator;
+            try { var fi = new FileInfo(file); (cwd, isSubagent, originator) = ReadGptMeta(fi); last = fi.LastWriteTime; }
             catch { continue; }
+            // 터미널에서 돌린 세션만. Codex 데스크톱 앱은 originator="Codex Desktop"(source="vscode")으로
+            // 기록되는데, 터미널 창이 아니라 이어하기 대상도 창 분류 근거도 되지 못한다.
+            if (originator is not null &&
+                !string.Equals(originator, TuiOriginator, StringComparison.OrdinalIgnoreCase)) continue;
             if (isSubagent && !includeSubagent) continue;
             if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) continue;
             if (hidden.Contains(cwd)) continue;
@@ -105,11 +112,13 @@ public static class ClaudeSessionService
     }
 
     /// <summary>
-    /// codex 세션 jsonl 앞부분에서 cwd와 "서브에이전트가 파생시킨 세션인지"를 함께 읽는다.
-    /// 관측된 형식: 첫 줄이 <c>{"type":"session_meta","payload":{"cwd":…,"source":{"subagent":{…}}}}</c>.
-    /// session_meta를 못 찾으면 형식 무관 cwd 재귀 탐색으로 폴백한다.
+    /// codex 세션 jsonl 앞부분에서 cwd·서브에이전트 여부·originator를 함께 읽는다.
+    /// 관측된 형식: 첫 줄이
+    /// <c>{"type":"session_meta","payload":{"cwd":…,"originator":"codex-tui","source":{"subagent":{…}}}}</c>.
+    /// 데스크톱 앱 세션은 originator="Codex Desktop", source="vscode"(문자열)로 기록된다.
+    /// session_meta를 못 찾으면 형식 무관 cwd 재귀 탐색으로 폴백한다(originator는 null).
     /// </summary>
-    private static (string? Cwd, bool IsSubagent) ReadGptMeta(FileInfo file)
+    private static (string? Cwd, bool IsSubagent, string? Originator) ReadGptMeta(FileInfo file)
     {
         try
         {
@@ -132,17 +141,20 @@ public static class ClaudeSessionService
                         string? cwd = payload.TryGetProperty("cwd", out var cwdEl) &&
                                       cwdEl.ValueKind == JsonValueKind.String
                             ? cwdEl.GetString() : FindCwdIn(root);
-                        return (cwd, sub);
+                        string? origin = payload.TryGetProperty("originator", out var orgEl) &&
+                                         orgEl.ValueKind == JsonValueKind.String
+                            ? orgEl.GetString() : null;
+                        return (cwd, sub, origin);
                     }
 
                     var any = FindCwdIn(root);
-                    if (!string.IsNullOrWhiteSpace(any)) return (any, false);
+                    if (!string.IsNullOrWhiteSpace(any)) return (any, false, null);
                 }
                 catch { /* 라인 파싱 실패 무시 */ }
             }
         }
         catch { /* 파일 읽기 실패 */ }
-        return (null, false);
+        return (null, false, null);
     }
 
     private static string? FindCwdIn(JsonElement el)
