@@ -11,7 +11,9 @@ public enum IconKind
     // 일괄
     MinimizeAll, ShowAll, RestorePrev,
     // 작업 세트
-    Save, Apply
+    Save, Apply,
+    // 세션 종류 표시
+    Claude, Gpt
 }
 
 /// <summary>
@@ -171,6 +173,38 @@ public static class Icons
             case IconKind.Apply: // 체크(적용)
             {
                 g.DrawLines(pen, new[] { P(s, 0.20f, 0.54f), P(s, 0.42f, 0.74f), P(s, 0.80f, 0.28f) });
+                break;
+            }
+
+            case IconKind.Claude: // 방사형 스파크 — Claude Code가 창 제목에 쓰는 ✳와 같은 모양
+            {
+                float cx = s / 2f, cy = s / 2f;
+                using var spoke = new Pen(color, Math.Max(1.1f, s * 0.115f))
+                { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                for (int i = 0; i < 8; i++)
+                {
+                    float a = i * 45f;                          // 긴 살 4개 + 짧은 살 4개(별 느낌)
+                    float len = s * (i % 2 == 0 ? 0.42f : 0.30f);
+                    g.DrawLine(spoke, cx, cy, cx + len * Cos(a), cy + len * Sin(a));
+                }
+                break;
+            }
+
+            case IconKind.Gpt: // 육각 링 — OpenAI 마크의 육각 대칭 + 가운데 구멍을 작은 크기에서도 남는 형태로 단순화
+            {
+                float cx = s / 2f, cy = s / 2f;
+                var outer = new PointF[6];
+                var inner = new PointF[6];
+                for (int i = 0; i < 6; i++)
+                {
+                    float rad = (float)(Math.PI / 180 * (i * 60 - 90));
+                    outer[i] = Polar(cx, cy, s * 0.45f, rad);
+                    inner[i] = Polar(cx, cy, s * 0.21f, rad);
+                }
+                using var gp = new GraphicsPath { FillMode = FillMode.Alternate };
+                gp.AddPolygon(outer);
+                gp.AddPolygon(inner);   // Alternate라 안쪽 육각이 구멍이 된다
+                g.FillPath(brush, gp);
                 break;
             }
         }

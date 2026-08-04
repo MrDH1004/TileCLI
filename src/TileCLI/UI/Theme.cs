@@ -237,6 +237,17 @@ public static class Theme
         }
         else { rect.X += 6; rect.Width -= 8; }
 
+        // 첫 열 아이콘(SmallImageList + ImageIndex). OwnerDraw라 ListView가 대신 그려주지 않으므로 직접 그린다.
+        if (e.ColumnIndex == 0 && lv.SmallImageList is { } imgs &&
+            e.Item.ImageIndex >= 0 && e.Item.ImageIndex < imgs.Images.Count)
+        {
+            var sz = imgs.ImageSize;
+            e.Graphics.DrawImage(imgs.Images[e.Item.ImageIndex],
+                rect.Left, rect.Top + (rect.Height - sz.Height) / 2, sz.Width, sz.Height);
+            rect.X += sz.Width + 6;
+            rect.Width -= sz.Width + 6;
+        }
+
         TextRenderer.DrawText(e.Graphics, e.SubItem.Text, lv.Font, rect, fg,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
