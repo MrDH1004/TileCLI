@@ -77,7 +77,7 @@ public sealed class MainForm : Form
     private OptionsForm? _optionsForm;
     private readonly ToolTip _toolTip = new();
     private readonly List<(Button btn, IconKind kind)> _iconButtons = new();
-    private ImageList? _sessionIcons;                          // 세션 목록 종류 아이콘(0=Claude, 1=GPT)
+    private ImageList? _kindIcons;                             // 종류 아이콘(0=Claude, 1=GPT) — 터미널·세션 목록 공용
     private Button _btnToggleAll = null!;
 
     // 작업 세트(창 배치 스냅샷 저장/복원) + 감시 모드(새 창 자동 배치)
@@ -135,7 +135,7 @@ public sealed class MainForm : Form
         SetupTray();
         Theme.Apply(this);
         _listView.DrawSubItem += DrawDragOverlay; // Theme 그리기 뒤에 실행되도록 여기서 구독(드래그 하이라이트 오버레이)
-        FormClosed += (_, _) => { _ghost?.Dispose(); _dragScrollTimer?.Dispose(); _sessionIcons?.Dispose(); };
+        FormClosed += (_, _) => { _ghost?.Dispose(); _dragScrollTimer?.Dispose(); _kindIcons?.Dispose(); };
         ApplyPostThemeTweaks();
         RestyleIcons();
 
@@ -1006,28 +1006,37 @@ public sealed class MainForm : Form
             btn.Image = Icons.Draw(kind, 18, color);
             old?.Dispose();
         }
-        RestyleSessionIcons();
+        RestyleKindIcons();
         UpdateToggleAllButton();
     }
 
     /// <summary>
-    /// 세션 목록 종류 아이콘(0=Claude, 1=GPT)을 현재 테마 색으로 (재)생성한다.
-    /// 색은 목록 글자색 규칙과 같게 맞춘다(Claude=기본 강조색, GPT=초록).
+    /// 종류 아이콘(0=Claude, 1=GPT)을 현재 테마 색으로 (재)생성해 터미널·세션 목록에 함께 물린다.
+    /// 색은 두 목록의 글자색 규칙과 같게 맞춘다(Claude=주황, GPT=초록).
     /// </summary>
-    private void RestyleSessionIcons()
+    private void RestyleKindIcons()
     {
-        if (_sessionView is null) return;
+        if (_sessionView is null && _listView is null) return;
 
         int px = LogicalToDeviceUnits(16);
         var list = new ImageList { ImageSize = new Size(px, px), ColorDepth = ColorDepth.Depth32Bit };
         list.Images.Add(Icons.Draw(IconKind.Claude, px, Theme.Claude));
         list.Images.Add(Icons.Draw(IconKind.Gpt, px, Theme.Gpt));
 
-        var old = _sessionIcons;
-        _sessionIcons = list;
-        _sessionView.SmallImageList = list;
+        var old = _kindIcons;
+        _kindIcons = list;
+        if (_sessionView is not null) _sessionView.SmallImageList = list;
+        if (_listView is not null) _listView.SmallImageList = list;
         old?.Dispose();
     }
+
+    /// <summary>종류별 아이콘 인덱스(Claude=0, GPT=1). 미상·일반 창은 아이콘 없음(-1).</summary>
+    private static int KindImageIndex(TerminalKind kind) => kind switch
+    {
+        TerminalKind.Claude => 0,
+        TerminalKind.Gpt => 1,
+        _ => -1
+    };
 
     private bool AllTerminalsChecked()
     {
@@ -1262,7 +1271,12 @@ public sealed class MainForm : Form
         foreach (var t in _terminals)
         {
             bool excluded = _arrangeExcluded.Contains(t.Handle);
-            var item = new ListViewItem(t.DisplayTitle) { Tag = t.Handle, Group = excluded ? _grpExcluded : _grpTarget };
+            var item = new ListViewItem(t.DisplayTitle)
+            {
+                Tag = t.Handle,
+                Group = excluded ? _grpExcluded : _grpTarget,
+                ImageIndex = KindImageIndex(t.Kind)   // 세션 목록과 같은 종류 아이콘
+            };
             item.SubItems.Add(t.KindLabel);
             item.UseItemStyleForSubItems = false;
             // 제외 창은 흐리게, 정렬 대상은 종류 셀만 강조색
