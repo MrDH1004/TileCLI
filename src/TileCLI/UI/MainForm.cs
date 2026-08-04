@@ -1307,9 +1307,9 @@ public sealed class MainForm : Form
         _sessionView.Items.Clear();
         foreach (var s in sessions)
         {
-            // GPT 세션은 초록으로 구분(터미널 목록과 동일 컬러 규칙). Claude는 기본색.
+            // 앞머리에 종류 표기(Claude=C / GPT=G) + GPT는 초록으로 구분(터미널 목록과 동일 컬러 규칙).
             var color = s.Kind == TerminalKind.Gpt ? Theme.Gpt : Theme.Text;
-            var it = new ListViewItem(s.DisplayLabel) { Tag = s, ToolTipText = $"[{(s.Kind == TerminalKind.Gpt ? "GPT" : "Claude")}] {s.Cwd}", ForeColor = color };
+            var it = new ListViewItem(s.MarkedLabel) { Tag = s, ToolTipText = $"[{(s.Kind == TerminalKind.Gpt ? "GPT" : "Claude")}] {s.Cwd}", ForeColor = color };
             it.SubItems.Add(s.Cwd);
             it.SubItems.Add(s.LastActive.ToString("yyyy-MM-dd HH:mm"));
             _sessionView.Items.Add(it);

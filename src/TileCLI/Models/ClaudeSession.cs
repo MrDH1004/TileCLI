@@ -42,6 +42,12 @@ public sealed class ClaudeSession
     public string DisplayLabel =>
         string.IsNullOrWhiteSpace(Title) ? ProjectName : Title;
 
+    /// <summary>목록 앞머리 종류 표기(Claude=C, GPT=G).</summary>
+    public string KindMark => Kind == TerminalKind.Gpt ? "G" : "C";
+
+    /// <summary>종류 표기를 앞에 붙인 목록 라벨(예: "G  telegram_stock").</summary>
+    public string MarkedLabel => $"{KindMark}  {DisplayLabel}";
+
     /// <summary>
     /// 재개 명령에 넘길 세션 식별자(UUID). Claude는 파일명이 곧 세션 UUID지만,
     /// codex 파일명은 rollout-&lt;타임스탬프&gt;-&lt;uuid&gt; 라 뒤쪽 UUID만 잘라내야 한다
