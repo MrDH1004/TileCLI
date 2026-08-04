@@ -810,7 +810,7 @@ public sealed class MainForm : Form
         bar.Controls.Add(MakeIconButton(IconKind.OpenNew, 38, (_, _) => ResumeSelectedSessions(), "선택 세션 이어서 복구 (Claude=claude -c / GPT=codex, 새 터미널)"));
         bar.Controls.Add(MakeIconButton(IconKind.Refresh, 38, (_, _) => RefreshSessions(), "최근 클로드 세션 목록 새로고침"));
         // 삭제 드롭다운(앱에서 삭제 / 저장폴더 삭제)
-        var btnDelete = MakeIconButton(IconKind.Delete, 38, null, "선택 세션 삭제 — 앱에서 숨김 / 저장폴더 휴지통");
+        var btnDelete = MakeIconButton(IconKind.Delete, 38, null, "선택 세션 삭제 — 앱에서 숨김 / 세션 기록 휴지통");
         btnDelete.Click += (_, _) =>
         {
             var m = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
@@ -850,7 +850,7 @@ public sealed class MainForm : Form
         menu.Items.Add("탐색기에서 폴더 열기", null, (_, _) => OpenSelectedSessionFolder());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("앱에서 삭제 (목록에서 숨김)", null, (_, _) => HideSelectedSessions());
-        menu.Items.Add("세션 저장폴더 삭제 (휴지통)", null, (_, _) => DeleteSelectedSessionStorage());
+        menu.Items.Add("세션 기록 삭제 (휴지통)", null, (_, _) => DeleteSelectedSessionStorage());
         return menu;
     }
 
@@ -1608,38 +1608,48 @@ public sealed class MainForm : Form
         SetStatus($"앱에서 삭제(숨김): {added}개 — 파일은 보존됨. (settings.json HiddenSessions)");
     }
 
-    /// <summary>세션 저장폴더 삭제 = 선택 세션의 ~/.claude/projects/&lt;encoded&gt;를 휴지통으로.</summary>
+    /// <summary>
+    /// 세션 기록 삭제 = Claude는 ~/.claude/projects/&lt;encoded&gt; 폴더를, GPT는 그 세션 jsonl 하나를 휴지통으로.
+    /// </summary>
     private void DeleteSelectedSessionStorage()
     {
         var sel = GetSelectedSessions();
         if (sel.Count == 0) { SetStatus("삭제할 세션을 선택하세요."); return; }
 
-        // 삭제될 폴더 목록을 보여주고 확인
-        var folders = sel
-            .Select(s => ClaudeSessionService.StorageFolder(s))
-            .Where(f => !string.IsNullOrEmpty(f))
+        // 삭제 대상은 종류별로 다르다: Claude=프로젝트 폴더, GPT=세션 파일 하나
+        // (codex는 날짜 폴더에 여러 프로젝트 세션이 섞여 있어 폴더를 지우면 남의 세션까지 날아간다)
+        var targets = sel
+            .Select(s => ClaudeSessionService.DeleteTarget(s))
+            .Where(t => !string.IsNullOrEmpty(t))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (folders.Count == 0) { SetStatus("삭제할 저장폴더를 찾을 수 없습니다."); return; }
+        if (targets.Count == 0) { SetStatus("삭제할 세션 기록을 찾을 수 없습니다."); return; }
 
-        string preview = string.Join("\n", folders.Take(10));
-        if (folders.Count > 10) preview += $"\n… 외 {folders.Count - 10}개";
+        int folderCount = sel.Count(s => s.Kind != TerminalKind.Gpt);
+        int fileCount = sel.Count(s => s.Kind == TerminalKind.Gpt);
+        string what = folderCount > 0 && fileCount > 0
+            ? $"Claude 세션 저장폴더 {folderCount}개와 GPT 세션 파일 {fileCount}개"
+            : folderCount > 0 ? $"Claude 세션 저장폴더 {folderCount}개" : $"GPT 세션 파일 {fileCount}개";
+
+        string preview = string.Join("\n", targets.Take(10));
+        if (targets.Count > 10) preview += $"\n… 외 {targets.Count - 10}개";
 
         var res = MessageBox.Show(this,
-            $"다음 Claude 세션 저장폴더 {folders.Count}개를 휴지통으로 보냅니다.\n" +
+            $"다음 {what}를 휴지통으로 보냅니다.\n" +
             "(코드/작업 폴더가 아니라 세션 기록만 삭제됩니다. 휴지통에서 복구 가능)\n\n" +
             preview,
-            "세션 저장폴더 삭제", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            "세션 기록 삭제", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
         if (res != DialogResult.OK) { SetStatus("삭제 취소됨."); return; }
 
+        string? gptDir = string.IsNullOrWhiteSpace(_gptSessionsDir) ? null : _gptSessionsDir;
         int ok = 0; string? lastErr = null;
         foreach (var s in sel)
-            if (ClaudeSessionService.DeleteSessionStorage(s, out string err)) ok++; else lastErr = err;
+            if (ClaudeSessionService.DeleteSessionStorage(s, out string err, gptDir)) ok++; else lastErr = err;
 
         RefreshSessions();
         SetStatus(lastErr is null
-            ? $"세션 저장폴더 삭제(휴지통): {ok}개"
-            : $"세션 저장폴더 삭제: {ok}/{sel.Count}개 (실패: {lastErr})");
+            ? $"세션 기록 삭제(휴지통): {ok}개"
+            : $"세션 기록 삭제: {ok}/{sel.Count}개 (실패: {lastErr})");
     }
 
     // ---- 단축키(요구 3/4) ----

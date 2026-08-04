@@ -174,37 +174,64 @@ public static class ClaudeSessionService
         string.IsNullOrEmpty(session?.TranscriptPath) ? null : Path.GetDirectoryName(session!.TranscriptPath);
 
     /// <summary>
-    /// 세션 저장폴더(~/.claude/projects/&lt;encoded&gt;)를 휴지통으로 이동한다("실제 디렉토리 삭제").
-    /// 안전장치: 반드시 projects 루트 하위 경로일 때만 삭제한다(엉뚱한 폴더 삭제 방지).
+    /// 삭제 대상 경로. Claude는 프로젝트 폴더(~/.claude/projects/&lt;encoded&gt;) 전체가 그 프로젝트 것이라
+    /// 폴더째 지우지만, codex는 날짜별 폴더(sessions/YYYY/MM/DD)에 여러 프로젝트 세션이 섞여 있어
+    /// (실측: 한 날짜 폴더에 11개 중 10개가 다른 프로젝트) 폴더를 지우면 남의 세션까지 날아간다.
+    /// 따라서 GPT는 그 세션 파일 하나만 대상으로 한다.
     /// </summary>
-    public static bool DeleteSessionStorage(ClaudeSession session, out string error)
+    public static string? DeleteTarget(ClaudeSession session)
+    {
+        if (session is null || string.IsNullOrEmpty(session.TranscriptPath)) return null;
+        return session.Kind == TerminalKind.Gpt
+            ? session.TranscriptPath
+            : Path.GetDirectoryName(session.TranscriptPath);
+    }
+
+    /// <summary>
+    /// 세션 기록을 휴지통으로 보낸다. Claude는 프로젝트 폴더(~/.claude/projects/&lt;encoded&gt;)째,
+    /// GPT는 그 세션 파일 하나만(같은 날짜 폴더에 다른 프로젝트 세션이 섞여 있으므로).
+    /// 안전장치: 각 CLI의 세션 루트 하위 경로일 때만 삭제한다(엉뚱한 경로 삭제 방지).
+    /// </summary>
+    public static bool DeleteSessionStorage(ClaudeSession session, out string error, string? gptSessionsDir = null)
     {
         error = string.Empty;
-        var folder = StorageFolder(session);
-        if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
+        bool isGpt = session?.Kind == TerminalKind.Gpt;
+        var target = DeleteTarget(session!);
+        bool exists = !string.IsNullOrEmpty(target) && (isGpt ? File.Exists(target) : Directory.Exists(target));
+        if (!exists)
         {
-            error = $"세션 저장폴더를 찾을 수 없습니다: {folder}";
+            error = isGpt ? $"세션 파일을 찾을 수 없습니다: {target}" : $"세션 저장폴더를 찾을 수 없습니다: {target}";
             return false;
         }
 
-        // 안전 검사: projects 루트 하위인지 확인
-        string root = Path.GetFullPath(ProjectsRoot).TrimEnd('\\', '/');
-        string full = Path.GetFullPath(folder).TrimEnd('\\', '/');
+        // 안전 검사: 그 CLI의 세션 루트 하위인지 확인
+        string rootPath = isGpt
+            ? (string.IsNullOrWhiteSpace(gptSessionsDir) ? GptSessionsRoot : gptSessionsDir!)
+            : ProjectsRoot;
+        string root = Path.GetFullPath(rootPath).TrimEnd('\\', '/');
+        string full = Path.GetFullPath(target!).TrimEnd('\\', '/');
         if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
             full.Equals(root, StringComparison.OrdinalIgnoreCase))
         {
-            error = $"안전 검사 실패 — projects 하위가 아니거나 루트 자체입니다: {full}";
+            error = $"안전 검사 실패 — {(isGpt ? "codex 세션" : "projects")} 루트 하위가 아니거나 루트 자체입니다: {full}";
             return false;
         }
 
         try
         {
             // 휴지통으로 이동(복구 가능)
-            Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(
-                folder,
-                Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
-                Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin,
-                Microsoft.VisualBasic.FileIO.UICancelOption.DoNothing);
+            if (isGpt)
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(
+                    full,
+                    Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                    Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin,
+                    Microsoft.VisualBasic.FileIO.UICancelOption.DoNothing);
+            else
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(
+                    full,
+                    Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                    Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin,
+                    Microsoft.VisualBasic.FileIO.UICancelOption.DoNothing);
             return true;
         }
         catch (Exception ex)
