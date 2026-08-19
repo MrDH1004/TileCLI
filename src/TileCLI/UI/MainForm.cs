@@ -47,7 +47,12 @@ public sealed class MainForm : Form
     private List<MonitorTarget> _monitors = new();
     private List<LayoutProfile> _profiles = new();
     private LayoutDirection _currentDirection = LayoutDirection.Grid;
-    private bool _monitorsInitialized;
+    // 사용자가 마지막으로 고른 모니터(DeviceName). '지금 체크된 것'과 분리해 둔다 —
+    // 부팅 직후처럼 그 모니터가 아직 안 붙어 있으면 주 모니터로 임시 폴백하지만
+    // 이 목록은 그대로 남아 저장되고, 모니터가 돌아오면 다시 선택된다.
+    private List<string> _desiredMonitors = new();
+    private bool _syncingMonitors;   // 목록 재적용 중 SelectionChanged로 의도가 덮어써지는 것 방지
+    private bool _monitorFallback;   // 저장된 모니터가 없어 주 모니터로 임시 배치 중
 
     private HotkeyManager? _hotkeys;
     private NotifyIcon? _tray;
@@ -109,6 +114,7 @@ public sealed class MainForm : Form
     {
         _settings = _settingsStore.Load();
         _config.Load();
+        _desiredMonitors = _config.GetList("Monitors"); // RefreshMonitors가 곧 참조한다
         _gptNames = _config.GetList("GptProcessNames");
         if (_gptNames.Count == 0) _gptNames = new List<string>(WindowDiscovery.DefaultGptProcesses);
         _claudeTitleMarkers = _config.GetList("ClaudeTitleMarkers");
@@ -153,6 +159,7 @@ public sealed class MainForm : Form
             // 저장된 UI 옵션/상태 복원(모니터 선택·간격·걸쳐배치·방향·프로파일·체크옵션·감시모드)
             ApplyConfig();
             RefreshList(); // config의 표시/제외 옵션(ClaudeGptOnly·ExcludeNonAi)을 로드 뒤 반영
+            NotifyMonitorFallback();
             _uiReady = true;
 
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -223,7 +230,8 @@ public sealed class MainForm : Form
         if (IsDisposed) return;
         if (InvokeRequired) { BeginInvoke(new Action(RefreshMonitors)); return; }
         RefreshMonitors();
-        SetStatus("디스플레이 구성 변경 감지 — 모니터 목록 갱신됨.");
+        if (_monitorFallback) NotifyMonitorFallback();
+        else SetStatus("디스플레이 구성 변경 감지 — 모니터 목록 갱신됨.");
     }
 
     private void BuildUi()
@@ -863,7 +871,12 @@ public sealed class MainForm : Form
             Location = new Point(10, 20),
             Size = new Size(170, 122)
         };
-        _monitorMap.SelectionChanged += (_, _) => SaveConfig();
+        _monitorMap.SelectionChanged += (_, _) =>
+        {
+            if (_applyingConfig || _syncingMonitors) return; // 복원/재적용은 의도가 아니다
+            CaptureMonitorSelection();
+            SaveConfig();
+        };
         _chkSpan = new CheckBox
         {
             Text = "모니터 걸침",
@@ -1200,26 +1213,59 @@ public sealed class MainForm : Form
     // ---- 데이터 갱신 ----
     private void RefreshMonitors()
     {
-        // 기존 체크를 DeviceName 기준으로 보존(핫플러그/해상도 변경 대응)
-        var previouslyChecked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < _monitors.Count; i++)
-            if (_monitorMap.IsChecked(i)) previouslyChecked.Add(_monitors[i].DeviceName);
-
         _monitors = MonitorService.Enumerate();
-        var checkedIdx = new List<int>();
+        _syncingMonitors = true;
+        try { _monitorMap.SetMonitors(_monitors, DesiredIndices()); }
+        finally { _syncingMonitors = false; }
+    }
+
+    /// <summary>
+    /// 저장된 의도(_desiredMonitors)에 해당하는 현재 모니터 인덱스.
+    /// 하나도 연결돼 있지 않으면 주 모니터로 임시 폴백하되 의도 목록은 건드리지 않는다.
+    /// </summary>
+    private List<int> DesiredIndices()
+    {
+        var idx = new List<int>();
         for (int i = 0; i < _monitors.Count; i++)
-        {
-            bool check = _monitorsInitialized ? previouslyChecked.Contains(_monitors[i].DeviceName) : _monitors[i].IsPrimary;
-            if (check) checkedIdx.Add(i);
-        }
-        if (checkedIdx.Count == 0 && _monitors.Count > 0)
+            if (_desiredMonitors.Contains(_monitors[i].DeviceName, StringComparer.OrdinalIgnoreCase))
+                idx.Add(i);
+
+        _monitorFallback = idx.Count == 0 && _desiredMonitors.Count > 0;
+        if (idx.Count == 0 && _monitors.Count > 0)
         {
             int pi = _monitors.FindIndex(x => x.IsPrimary);
-            checkedIdx.Add(pi < 0 ? 0 : pi);
+            idx.Add(pi < 0 ? 0 : pi);
         }
-        _monitorMap.SetMonitors(_monitors, checkedIdx);
+        return idx;
+    }
 
-        _monitorsInitialized = true;
+    /// <summary>모니터 목록은 그대로 두고 체크 상태만 의도에 맞춰 다시 적용.</summary>
+    private void ApplyMonitorSelection()
+    {
+        _syncingMonitors = true;
+        try
+        {
+            var idx = DesiredIndices();
+            for (int i = 0; i < _monitors.Count; i++) _monitorMap.SetChecked(i, idx.Contains(i));
+        }
+        finally { _syncingMonitors = false; }
+    }
+
+    /// <summary>사용자가 직접 고른 결과를 의도로 확정(지금 없는 모니터는 이때 정리된다).</summary>
+    private void CaptureMonitorSelection()
+    {
+        var list = new List<string>();
+        foreach (int idx in _monitorMap.CheckedIndices)
+            if (idx >= 0 && idx < _monitors.Count) list.Add(_monitors[idx].DeviceName);
+        _desiredMonitors = list;
+        _monitorFallback = false;
+    }
+
+    /// <summary>저장된 모니터가 지금 없어 주 모니터로 임시 배치 중이면 상태바에 알린다.</summary>
+    private void NotifyMonitorFallback()
+    {
+        if (!_monitorFallback || _desiredMonitors.Count == 0) return;
+        SetStatus($"저장된 모니터({string.Join(", ", _desiredMonitors)})가 연결돼 있지 않아 주 모니터로 임시 배치합니다 — 다시 연결되면 자동 복원됩니다.");
     }
 
     private void RefreshList()
@@ -1746,11 +1792,9 @@ public sealed class MainForm : Form
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
         _config.SetString("Direction", _currentDirection.ToString());
 
-        // 체크된 모니터(DeviceName 기준 — 핫플러그/해상도 변경에 안정적)
-        var mons = new List<string>();
-        foreach (int idx in _monitorMap.CheckedIndices)
-            if (idx >= 0 && idx < _monitors.Count) mons.Add(_monitors[idx].DeviceName);
-        _config.SetList("Monitors", mons);
+        // 사용자가 고른 모니터(DeviceName 기준). 지금 연결돼 있지 않아도 목록에 남긴다 —
+        // 폴백으로 체크된 주 모니터를 저장해 버리면 원래 선택이 영구히 지워진다.
+        _config.SetList("Monitors", _desiredMonitors);
 
         _config.SetString("Profile", _selectedProfile);
         _config.SetString("Theme", Theme.IsDark ? "Dark" : "Light");
@@ -1784,19 +1828,9 @@ public sealed class MainForm : Form
             if (Enum.TryParse<LayoutDirection>(_config.GetString("Direction"), out var dir))
                 _currentDirection = dir;
 
-            // 모니터 선택 복원(저장값 있을 때만)
-            var savedMonitors = _config.GetList("Monitors");
-            if (savedMonitors.Count > 0)
-            {
-                for (int i = 0; i < _monitors.Count; i++)
-                    _monitorMap.SetChecked(i, savedMonitors.Contains(_monitors[i].DeviceName, StringComparer.OrdinalIgnoreCase));
-
-                if (_monitorMap.CheckedCount == 0 && _monitors.Count > 0)
-                {
-                    int pi = _monitors.FindIndex(x => x.IsPrimary);
-                    _monitorMap.SetChecked(pi < 0 ? 0 : pi, true);
-                }
-            }
+            // 모니터 선택 복원(저장된 의도 기준 — 지금 없는 모니터는 목록에 남겨 둔다)
+            _desiredMonitors = _config.GetList("Monitors");
+            ApplyMonitorSelection();
             // 걸쳐배치 상태에 맞춰 단일/다중 확정(구 설정이 다중이면 하나로 정리)
             _monitorMap.SingleSelect = !_chkSpan.Checked;
 
@@ -1853,6 +1887,7 @@ public sealed class MainForm : Form
         _chkSpan.Checked = p.SpanMonitors;
         for (int i = 0; i < _monitors.Count; i++)
             _monitorMap.SetChecked(i, p.MonitorIndices.Contains(i));
+        CaptureMonitorSelection();
 
         _selectedProfile = p.Name;
         DoArrange(p.Direction);
