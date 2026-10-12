@@ -16,6 +16,20 @@ public static class ClaudeSessionService
     /// <summary>터미널에서 실행된 codex 세션의 originator 값. 데스크톱 앱은 "Codex Desktop"으로 기록된다.</summary>
     private const string TuiOriginator = "codex-tui";
 
+    /// <summary>
+    /// 터미널에서 실행된 claude 세션의 entrypoint 값. Claude 데스크톱 앱이 만든 세션은
+    /// "claude-desktop"으로 기록되며 cwd가 %APPDATA%\Claude\scratch-workspaces\… 같은 임시 폴더다.
+    /// </summary>
+    private const string CliEntrypoint = "cli";
+
+    /// <summary>
+    /// 세션 jsonl의 entrypoint 값으로 "터미널에서 돌린 claude 세션"인지 판정한다.
+    /// 데스크톱 앱 세션(claude-desktop)은 정렬할 터미널 창도 없고 이어하기 대상도 아니므로 제외.
+    /// entrypoint 필드가 없는(구버전) 기록은 유지한다.
+    /// </summary>
+    public static bool IsCliEntrypoint(string? entrypoint) =>
+        entrypoint is null || string.Equals(entrypoint, CliEntrypoint, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>클로드 projects 루트 경로(~\.claude\projects).</summary>
     public static string ProjectsRoot =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
@@ -296,6 +310,7 @@ public static class ClaudeSessionService
     {
         string? cwd = null;
         string? title = null;
+        string? entrypoint = null;
         try
         {
             foreach (var line in ReadHeadLines(file.FullName, MaxLinesToScan))
@@ -308,6 +323,9 @@ public static class ClaudeSessionService
                     var el = doc.RootElement;
                     if (cwd is null && el.TryGetProperty("cwd", out var cwdEl) && cwdEl.ValueKind == JsonValueKind.String)
                         cwd = cwdEl.GetString();
+                    if (entrypoint is null && el.TryGetProperty("entrypoint", out var epEl) &&
+                        epEl.ValueKind == JsonValueKind.String)
+                        entrypoint = epEl.GetString();
                     if (title is null && el.TryGetProperty("type", out var typeEl) &&
                         typeEl.ValueKind == JsonValueKind.String && typeEl.GetString() == "summary" &&
                         el.TryGetProperty("summary", out var sumEl) && sumEl.ValueKind == JsonValueKind.String)
@@ -319,6 +337,10 @@ public static class ClaudeSessionService
             }
         }
         catch { /* 파일 읽기 실패 → cwd null */ }
+
+        // 터미널에서 돌린 세션만. Claude 데스크톱 앱 세션(entrypoint="claude-desktop")은 목록은 물론
+        // 창 분류 힌트에서도 뺀다 — 그 폴더에서 터미널 claude가 돌았다는 근거가 아니기 때문.
+        if (!IsCliEntrypoint(entrypoint)) return null;
 
         // cwd가 없으면 폴더명 디코딩으로 근사(불완전 — 표시용)
         cwd ??= DecodeFolderName(Path.GetFileName(dir));

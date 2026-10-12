@@ -343,7 +343,39 @@ internal static class SelfTest
         catch (Exception ex) { gptFail++; Out($"  FAIL [gpt-session] {ex.Message}"); }
         Out($"[gpt-session] scan {(gptFail == 0 ? "ok" : "FAIL")}");
 
-        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0;
+        // 9) Claude 세션 entrypoint 판정: 터미널(cli)·구버전(없음)은 유지, 데스크톱 앱(claude-desktop)은 제외
+        int claudeFail = 0;
+        {
+            void CChk(bool ok, string name) { if (!ok) { claudeFail++; Out($"  FAIL [claude-session] {name}"); } }
+            CChk(ClaudeSessionService.IsCliEntrypoint("cli"), "entrypoint=cli -> kept");
+            CChk(ClaudeSessionService.IsCliEntrypoint(null), "entrypoint missing -> kept");
+            CChk(!ClaudeSessionService.IsCliEntrypoint("claude-desktop"), "entrypoint=claude-desktop -> excluded");
+        }
+        Out($"[claude-session] entrypoint {(claudeFail == 0 ? "ok" : "FAIL")}");
+
+        // 10) ⅓ 폭 유지: 오른쪽부터 1/3 칸, 기존 칸에 있던 창은 자리 유지
+        {
+            void TChk(bool ok, string name) { if (!ok) { claudeFail++; Out($"  FAIL [third] {name}"); } }
+            var area = new Rectangle(0, 0, 1920, 1040);
+            var c1 = TilingEngine.ThirdColumns(1, area);
+            TChk(c1.Count == 1 && c1[0] == Rectangle.FromLTRB(1280, 0, 1920, 1040), "1 window -> right third");
+            var c3 = TilingEngine.ThirdColumns(3, area);
+            TChk(c3.Count == 3 && c3[1] == Rectangle.FromLTRB(640, 0, 1280, 1040) && c3[2] == Rectangle.FromLTRB(0, 0, 640, 1040),
+                "3 windows -> right, middle, left");
+            TChk(TilingEngine.ThirdColumns(5, area).Count == 3, "capped at 3 columns");
+            var odd = TilingEngine.ThirdColumns(3, new Rectangle(-2560, 100, 2560, 1400));
+            TChk(odd[0].Right == 0 && odd[2].Left == -2560 && odd[0].Width == 853, "offset monitor -> edges exact");
+
+            // 새 창이 목록 앞(Z순서)에 와도 기존 창은 오른쪽 칸 유지, 새 창은 가운데 칸
+            var two = TilingEngine.ThirdColumns(2, area);
+            var a = TilingEngine.AssignKeepingPlace(new Rectangle?[] { new Rectangle(100, 100, 800, 500), Rectangle.FromLTRB(1283, 0, 1918, 1040) }, two);
+            TChk(a[0] == 1 && a[1] == 0, "existing window keeps right slot, new one takes middle");
+            var b = TilingEngine.AssignKeepingPlace(new Rectangle?[] { null, null }, two);
+            TChk(b[0] == 0 && b[1] == 1, "no current rects -> list order");
+        }
+        Out($"[third] {(claudeFail == 0 ? "ok" : "FAIL")}");
+
+        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0;
         Out(pass ? "RESULT: PASS" : "RESULT: FAIL");
 
         // 콘솔 캡처가 불확실하므로 결과를 파일로도 남김

@@ -93,7 +93,9 @@ public sealed class MainForm : Form
     private readonly WindowWatcher _watcher = new();
     private System.Windows.Forms.Timer? _titleSync;   // 터미널 제목 실시간 동기화(제자리 텍스트 갱신)
     private bool _watchMode;
-    private int _suppressWatchUntil;                 // 이 tick 전까지 감시 재배치 억제(우리 이동 루프 방지)
+    private CheckBox _chkSingleThird = null!;
+    private bool _singleThird;                       // 창이 1개일 때 모니터 오른쪽 1/3로 배치(Win+Alt+→ 크기)
+    private int _suppressWatchUntil;                // 이 tick 전까지 감시 재배치 억제(우리 이동 루프 방지)
 
     // 작업 세트 적용 시 닫힌 세션 재실행 — 순차(한 번에 하나) 실행/배치.
     // 동시에 여러 개를 띄우면 일부 창의 한글(IME) 입력이 깨지므로, 창이 뜨고 안정화된 뒤 배치하고 다음을 실행한다.
@@ -929,6 +931,22 @@ public sealed class MainForm : Form
             SetStatus(_watchMode ? "창 자동 배치 ON — 창이 열리거나 닫히면 자동 재배치." : "창 자동 배치 OFF.");
         };
 
+        // 창 1개일 때 1/3 폭: 체크/해제 즉시 그 한 창을 1/3 ↔ 전체로 다시 맞춘다
+        _chkSingleThird = new CheckBox { Text = "⅓ 폭 유지", AutoSize = true, Location = new Point(118, 142) };
+        _toolTip.SetToolTip(_chkSingleThird,
+            "창마다 모니터 1/3 폭(Win+Alt+→ 크기)으로 오른쪽부터 배치합니다(최대 3개). " +
+            "새 창이 떠도 기존 창 크기·위치는 유지됩니다. 4개 이상이면 일반 배치. 해제하면 일반 배치로 되돌립니다.");
+        _chkSingleThird.CheckedChanged += (_, _) =>
+        {
+            if (_applyingConfig) return;
+            _singleThird = _chkSingleThird.Checked;
+            SaveConfig();
+            var targets = GetTargetWindows();
+            if (targets.Count is >= 1 and <= TilingEngine.MaxThirdColumns)
+                DoArrange(_currentDirection, targets); // 1/3 칸에 담기는 개수면 바로 적용/해제
+            else SetStatus(_singleThird ? "⅓ 폭 유지 ON — 창 1~3개일 때 1/3 폭으로 배치합니다." : "⅓ 폭 유지 OFF.");
+        };
+
         grp.Controls.Add(btnAuto);
         grp.Controls.Add(btnH);
         grp.Controls.Add(btnV);
@@ -938,6 +956,7 @@ public sealed class MainForm : Form
         grp.Controls.Add(btnRestore);
         grp.Controls.Add(_chkLink);
         grp.Controls.Add(_chkWatch);
+        grp.Controls.Add(_chkSingleThird);
         return grp;
     }
 
@@ -1505,15 +1524,40 @@ public sealed class MainForm : Form
         if (area.Width <= 0 || area.Height <= 0) { SetStatus("유효한 배치 영역이 없습니다."); return; }
 
         int gap = 0; // 간격 조절 UI 제거 → 항상 꽉 붙임
-        int applied = TilingEngine.ApplyTiling(targets, direction, area, gap, _snapshots);
+
+        // "⅓ 폭 유지": 창이 1~3개면 각 창을 영역 1/3 폭(전체 높이)으로 오른쪽부터 채운다.
+        // 이미 1/3 칸에 놓인 창은 그 칸을 지키고 새 창만 빈 칸으로 — 두 번째 창이 떠도 첫 창은 그대로.
+        // 4개 이상은 1/3 폭에 다 들어가지 않으므로 일반 배치로 돌아간다.
+        bool third = _singleThird && targets.Count <= TilingEngine.MaxThirdColumns;
+        List<IntPtr> placedOrder;
+        List<Rectangle> cells;
+        int applied;
+        if (third)
+        {
+            var slots = TilingEngine.ThirdColumns(targets.Count, area);
+            var current = targets.Select(h => TilingEngine.TryGetVisibleRect(h, out var r) ? r : (Rectangle?)null).ToList();
+            var assign = TilingEngine.AssignKeepingPlace(current, slots);
+            placedOrder = new List<IntPtr>(); cells = new List<Rectangle>();
+            for (int i = 0; i < targets.Count; i++)
+                if (assign[i] >= 0) { placedOrder.Add(targets[i]); cells.Add(slots[assign[i]]); }
+            applied = TilingEngine.ApplyCells(placedOrder, cells, area, gap, _snapshots);
+        }
+        else
+        {
+            placedOrder = targets;
+            cells = TilingEngine.ComputeCells(targets.Count, direction, area, gap);
+            applied = TilingEngine.ApplyTiling(targets, direction, area, gap, _snapshots);
+        }
 
         // 인접 창 연동: 방금 만든 배치를 그룹으로 등록(경계 드래그 시 옆 창이 따라 붙음)
         if (_linkAdjacent)
-            _groupTracker.Track(targets, TilingEngine.ComputeCells(targets.Count, direction, area, gap), area, gap);
+            _groupTracker.Track(placedOrder, cells, area, gap);
 
         SaveConfig(); // 최근 사용 방향/간격/걸쳐배치/모니터 기록
         RefreshList();
-        SetStatus($"{DirName(direction)} 정렬: {applied}/{targets.Count}개 배치 (영역 {area.Width}x{area.Height}).");
+        SetStatus(third
+            ? $"⅓ 폭 배치: {applied}/{targets.Count}개, 칸 폭 {cells[0].Width} (오른쪽부터)."
+            : $"{DirName(direction)} 정렬: {applied}/{targets.Count}개 배치 (영역 {area.Width}x{area.Height}).");
     }
 
     /// <summary>
@@ -1789,6 +1833,7 @@ public sealed class MainForm : Form
         _config.SetBool("ClaudeGptOnly", _claudeGptOnly);
         _config.SetBool("ExcludeNonAi", _excludeNonAi);
         _config.SetBool("WatchMode", _watchMode);
+        _config.SetBool("SingleThird", _singleThird);
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
         _config.SetString("Direction", _currentDirection.ToString());
 
@@ -1823,6 +1868,8 @@ public sealed class MainForm : Form
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
             _watcher.SetEnabled(_watchMode);
+            _singleThird = _config.GetBool("SingleThird", false);
+            _chkSingleThird.Checked = _singleThird;
             _chkSpan.Checked = _config.GetBool("SpanMonitors", false);
 
             if (Enum.TryParse<LayoutDirection>(_config.GetString("Direction"), out var dir))

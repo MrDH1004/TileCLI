@@ -146,6 +146,60 @@ public static class TilingEngine
         return LayoutDirection.Grid;
     }
 
+    /// <summary>1/3 폭 고정 배치가 담을 수 있는 최대 창 수(3칸).</summary>
+    public const int MaxThirdColumns = 3;
+
+    /// <summary>
+    /// 1/3 폭 고정 칸 count개(최대 3)를 오른쪽부터 왼쪽으로 계산한다. 전체 높이.
+    /// 마지막(가장 왼쪽) 칸이 3개일 때는 영역 왼쪽 경계까지 채워 반올림 오차를 흡수한다.
+    /// </summary>
+    public static List<Rectangle> ThirdColumns(int count, Rectangle area)
+    {
+        var cells = new List<Rectangle>();
+        if (count <= 0 || area.Width <= 0 || area.Height <= 0) return cells;
+        count = Math.Min(count, MaxThirdColumns);
+        int w = (int)Math.Round(area.Width / 3.0);
+        for (int i = 0; i < count; i++)
+        {
+            int right = area.Right - i * w;
+            int left = i == MaxThirdColumns - 1 ? area.Left : right - w;
+            cells.Add(Rectangle.FromLTRB(left, area.Top, right, area.Bottom));
+        }
+        return cells;
+    }
+
+    /// <summary>
+    /// 창마다 들어갈 칸 번호를 정한다. 이미 어떤 칸에 (tolerance 안으로) 놓여 있는 창은 그 칸을 유지하고,
+    /// 나머지 창은 남은 칸을 앞에서부터 순서대로 채운다. 새 창이 열려도 기존 창이 밀려나지 않게 하기 위함.
+    /// 반환 배열 길이 = current.Count, 칸이 모자라면 -1.
+    /// </summary>
+    public static int[] AssignKeepingPlace(IReadOnlyList<Rectangle?> current, IReadOnlyList<Rectangle> cells, int tolerance = 16)
+    {
+        var result = Enumerable.Repeat(-1, current.Count).ToArray();
+        var taken = new bool[cells.Count];
+        for (int i = 0; i < current.Count; i++)
+        {
+            if (current[i] is not Rectangle r) continue;
+            for (int c = 0; c < cells.Count; c++)
+            {
+                if (taken[c]) continue;
+                var k = cells[c];
+                if (Math.Abs(r.Left - k.Left) <= tolerance && Math.Abs(r.Right - k.Right) <= tolerance &&
+                    Math.Abs(r.Top - k.Top) <= tolerance && Math.Abs(r.Bottom - k.Bottom) <= tolerance)
+                { result[i] = c; taken[c] = true; break; }
+            }
+        }
+        int next = 0;
+        for (int i = 0; i < current.Count; i++)
+        {
+            if (result[i] >= 0) continue;
+            while (next < cells.Count && taken[next]) next++;
+            if (next >= cells.Count) break;
+            result[i] = next; taken[next] = true;
+        }
+        return result;
+    }
+
     /// <summary>선택된 모니터들로부터 타일링 대상 영역(작업영역)을 산출.</summary>
     public static Rectangle ComputeTargetArea(IReadOnlyList<MonitorTarget> selected, bool span)
     {
@@ -172,11 +226,18 @@ public static class TilingEngine
         Rectangle area, int gap, SnapshotStore snapshots)
     {
         if (windows.Count == 0 || area.Width <= 0 || area.Height <= 0) return 0;
+        return ApplyCells(windows, ComputeCells(windows.Count, direction, area, gap), area, gap, snapshots);
+    }
+
+    /// <summary>창 목록을 미리 계산된 셀(windows[i] → cells[i])에 실제 배치. 배치 전 스냅샷 저장.</summary>
+    public static int ApplyCells(IReadOnlyList<IntPtr> windows, IReadOnlyList<Rectangle> cells,
+        Rectangle area, int gap, SnapshotStore snapshots)
+    {
+        if (windows.Count == 0 || area.Width <= 0 || area.Height <= 0) return 0;
 
         // 정렬 직전 상태 스냅샷(복원용)
         snapshots.Capture(windows);
 
-        var cells = ComputeCells(windows.Count, direction, area, gap);
         int applied = 0;
 
         for (int i = 0; i < windows.Count && i < cells.Count; i++)
