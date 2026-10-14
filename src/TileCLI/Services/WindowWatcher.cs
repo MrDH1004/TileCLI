@@ -17,6 +17,14 @@ public sealed class WindowWatcher : IDisposable
 
     public bool Enabled { get; private set; }
 
+    public static bool HasWindowChanges(
+        IReadOnlyCollection<TileCLI.Models.TerminalWindow> before,
+        IReadOnlyCollection<TileCLI.Models.TerminalWindow> after)
+    {
+        var previous = before.Select(t => (t.Handle, t.ProcessId, t.Kind)).ToHashSet();
+        return !previous.SetEquals(after.Select(t => (t.Handle, t.ProcessId, t.Kind)));
+    }
+
     public WindowWatcher(int intervalMs = 1200)
     {
         _timer = new System.Windows.Forms.Timer { Interval = Math.Max(300, intervalMs) };

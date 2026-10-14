@@ -275,6 +275,21 @@ internal static class SelfTest
 
         // 6) 감시자 훅 설치/해제
         int watchFail = 0;
+        TerminalWindow TestWindow(int handle, TerminalKind kind, uint pid = 10, string title = "project") =>
+            new() { Handle = new IntPtr(handle), Kind = kind, ProcessId = pid, Title = title };
+        var plain = new[] { TestWindow(1, TerminalKind.Plain) };
+        var gpt = new[] { TestWindow(1, TerminalKind.Gpt) };
+        var watcherCases = new (string Name, bool Ok)[]
+        {
+            ("late GPT detection", WindowWatcher.HasWindowChanges(plain, gpt)),
+            ("new window", WindowWatcher.HasWindowChanges(gpt, new[] { gpt[0], TestWindow(2, TerminalKind.Claude) })),
+            ("closed window", WindowWatcher.HasWindowChanges(gpt, Array.Empty<TerminalWindow>())),
+            ("reused handle", WindowWatcher.HasWindowChanges(gpt, new[] { TestWindow(1, TerminalKind.Gpt, 11) })),
+            ("title changes only", !WindowWatcher.HasWindowChanges(gpt, new[] { TestWindow(1, TerminalKind.Gpt, title: "working") })),
+            ("order changes only", !WindowWatcher.HasWindowChanges(new[] { gpt[0], TestWindow(2, TerminalKind.Claude) }, new[] { TestWindow(2, TerminalKind.Claude), gpt[0] }))
+        };
+        foreach (var (name, ok) in watcherCases)
+            if (!ok) { watchFail++; Out($"  FAIL [watcher] {name}"); }
         try
         {
             using var w = new WindowWatcher();

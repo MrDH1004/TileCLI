@@ -1633,7 +1633,7 @@ public sealed class MainForm : Form
         {
             // 종류별 이어서-복구 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
             string cmd = s.Kind == TerminalKind.Gpt ? BuildGptResumeCmd(s) : "claude -c";
-            string? title = s.Kind == TerminalKind.Gpt ? null : "✳ " + SessionWindowTitle(s);
+            string title = (s.Kind == TerminalKind.Gpt ? "codex " : "✳ ") + SessionWindowTitle(s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
 
@@ -1673,7 +1673,7 @@ public sealed class MainForm : Form
         {
             // 종류별 새 세션 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
             string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : "claude";
-            string? title = s.Kind == TerminalKind.Gpt ? null : "✳ " + SessionWindowTitle(s);
+            string title = (s.Kind == TerminalKind.Gpt ? "codex " : "✳ ") + SessionWindowTitle(s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
 
@@ -2197,19 +2197,18 @@ public sealed class MainForm : Form
         if (!_watchMode || IsDisposed || !_uiReady) return;
         if (Environment.TickCount < _suppressWatchUntil) return;
 
-        // UI 갱신 없이 핸들 집합만 비교(EnumWindows는 가벼움)
+        // 시작 직후 일반 콘솔이었다가 CLI로 인식되는 변화도 감지한다.
         List<TerminalWindow> found;
-        try { found = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers); }
+        try { found = WindowDiscovery.Discover(_gptNames, _claudeTitleMarkers, _gptTitleMarkers,
+            string.IsNullOrWhiteSpace(_gptSessionsDir) ? null : _gptSessionsDir); }
         catch { return; }
 
-        var after = found.Select(t => t.Handle).ToHashSet();
-        var before = _terminals.Select(t => t.Handle).ToHashSet();
-        if (after.SetEquals(before)) return;        // 변화 없음 → UI/배치 건드리지 않음
+        if (_claudeGptOnly) found = found.Where(t => t.IsAi).ToList();
+        if (!WindowWatcher.HasWindowChanges(_terminals, found)) return;
 
         RefreshList();                               // 집합이 바뀐 경우만 UI 갱신
-        if (_terminals.Count == 0) return;
-
         var allTargets = _terminals.Select(t => t.Handle).Where(h => !_arrangeExcluded.Contains(h)).ToList();
+        if (allTargets.Count == 0) return;
         DoArrange(_currentDirection, allTargets);    // 전 창 대상(체크 무시) — 새 창 포함 재배치
         SetStatus($"감시 모드: 창 변화 감지 → 자동 배치({DirName(_currentDirection)}, {allTargets.Count}개).");
     }
