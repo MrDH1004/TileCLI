@@ -390,7 +390,27 @@ internal static class SelfTest
         }
         Out($"[third] {(claudeFail == 0 ? "ok" : "FAIL")}");
 
-        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0;
+        // 11) 자식 환경 레지스트리 갱신: 시작 시점 PATH 대신 레지스트리의 시스템+사용자 Path, USERNAME은 세션 값 유지
+        int envFail = 0;
+        try
+        {
+            var env = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            { ["PATH"] = "tilecli_stale_path", ["USERNAME"] = Environment.UserName };
+            ClaudeSessionService.RefreshFromRegistry(env);
+            string path = env.TryGetValue("Path", out var pv) ? pv ?? string.Empty : string.Empty;
+            string userPath = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User) ?? string.Empty;
+            string? lastUser = userPath.Split(';', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+            if (path.Contains("tilecli_stale_path", StringComparison.OrdinalIgnoreCase))
+            { envFail++; Out("  FAIL [env-refresh] 시작 시점 PATH가 남아 있음"); }
+            if (lastUser != null && !path.Contains(lastUser, StringComparison.OrdinalIgnoreCase))
+            { envFail++; Out($"  FAIL [env-refresh] 사용자 PATH 마지막 항목 누락: {lastUser}"); }
+            if (!string.Equals(env.TryGetValue("USERNAME", out var un) ? un : null, Environment.UserName, StringComparison.OrdinalIgnoreCase))
+            { envFail++; Out($"  FAIL [env-refresh] USERNAME={un} (기대 {Environment.UserName})"); }
+        }
+        catch (Exception ex) { envFail++; Out($"  FAIL [env-refresh] {ex.Message}"); }
+        Out($"[env-refresh] registry {(envFail == 0 ? "ok" : "FAIL")}");
+
+        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0 && envFail == 0;
         Out(pass ? "RESULT: PASS" : "RESULT: FAIL");
 
         // 콘솔 캡처가 불확실하므로 결과를 파일로도 남김

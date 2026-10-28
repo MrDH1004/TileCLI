@@ -509,6 +509,8 @@ public static class ClaudeSessionService
     private static void CleanChildEnvironment(ProcessStartInfo psi)
     {
         var env = psi.Environment;
+        RefreshFromRegistry(env);
+
         var remove = env.Keys.Where(k =>
             k.Equals("CLAUDECODE", StringComparison.OrdinalIgnoreCase) ||
             k.StartsWith("CLAUDE_CODE", StringComparison.OrdinalIgnoreCase) ||
@@ -521,5 +523,52 @@ public static class ClaudeSessionService
         // 대상은 항상 실제 터미널 콘솔(wt/cmd) → 트루컬러 지원. 색상 강제로 확실히.
         env["FORCE_COLOR"] = "3";
         env["COLORTERM"] = "truecolor";
+    }
+
+    /// <summary>
+    /// 시스템/사용자 환경변수를 레지스트리에서 다시 읽어 자식 환경에 덮어쓴다.
+    ///
+    /// 배경: wt.exe는 새 탭에 호출한 프로세스의 환경을 그대로 넘긴다. 이 앱이 오래 떠 있는 동안
+    /// 설치 프로그램이 PATH를 바꾸면(예: Unity CLI, cargo) 앱이 들고 있는 시작 시점 환경이 전달되어
+    /// 새 터미널에서 명령을 찾지 못한다. 로그온 때와 같은 규칙(시스템 → 사용자 덮어쓰기, PATH는 이어붙임)으로
+    /// 최신 값을 반영한다. 레지스트리 조회 실패 시 기존 환경을 그대로 둔다.
+    /// </summary>
+    internal static void RefreshFromRegistry(IDictionary<string, string?> env)
+    {
+        try
+        {
+            var machine = Environment.GetEnvironmentVariables(EnvironmentVariableTarget.Machine);
+            var user = Environment.GetEnvironmentVariables(EnvironmentVariableTarget.User);
+
+            foreach (System.Collections.DictionaryEntry e in machine)
+                env[(string)e.Key] = e.Value as string;
+            foreach (System.Collections.DictionaryEntry e in user)
+            {
+                var key = (string)e.Key;
+                if (!key.Equals("Path", StringComparison.OrdinalIgnoreCase))
+                    env[key] = e.Value as string;
+            }
+
+            // 시스템 변수에는 USERNAME=SYSTEM이 있다 → 로그온 때처럼 세션 변수(USERNAME, USERPROFILE 등)로 되돌린다.
+            using (var vol = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Volatile Environment"))
+            {
+                if (vol != null)
+                {
+                    foreach (var name in vol.GetValueNames())
+                        if (vol.GetValue(name) is string v) env[name] = v;
+                }
+            }
+
+            string machinePath = machine["Path"] as string ?? string.Empty;
+            string userPath = user["Path"] as string ?? string.Empty;
+            string merged = string.Join(';', new[] { machinePath, userPath }.Where(p => p.Length > 0));
+            if (merged.Length > 0)
+            {
+                foreach (var k in env.Keys.Where(k => k.Equals("Path", StringComparison.OrdinalIgnoreCase)).ToList())
+                    env.Remove(k);
+                env["Path"] = merged;
+            }
+        }
+        catch (System.Security.SecurityException) { /* 레지스트리 접근 불가 → 기존 환경 유지 */ }
     }
 }
