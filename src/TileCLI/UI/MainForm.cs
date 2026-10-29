@@ -1484,6 +1484,16 @@ public sealed class MainForm : Form
         if (selected.Count == 0 && _monitors.Count > 0)
             selected.Add(_monitors[0]);
 
+        // 작업영역은 배치 시점에 다시 읽는다. 목록은 시작·디스플레이 변경 때만 갱신되는데,
+        // 절전 복귀 직후 작업표시줄이 아직 없을 때 열거되면 작업영역=모니터 전체로 굳어
+        // 창 아래가 작업표시줄 뒤로 들어간다(작업표시줄 변화는 DisplaySettingsChanged를 안 낸다).
+        var live = MonitorService.Enumerate();
+        for (int i = 0; i < selected.Count; i++)
+        {
+            var now = live.FirstOrDefault(m => string.Equals(m.DeviceName, selected[i].DeviceName, StringComparison.OrdinalIgnoreCase));
+            if (now != null) selected[i] = now;
+        }
+
         return (selected, _chkSpan.Checked);
     }
 
