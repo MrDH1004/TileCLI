@@ -21,7 +21,7 @@ public sealed class MainForm : Form
     private bool _applyingConfig; // config 적용 중 변경 이벤트로 되저장 방지
     private bool _uiReady;        // 초기 로드 완료 후에만 저장
     private List<TerminalWindow> _terminals = new();
-    private List<IntPtr> _windowOrder = new(); // 드래그로 정한 사용자 순서(핸들). 비면 탐지(Z)순서.
+    private List<IntPtr> _windowOrder = new(); // 배치 순서(핸들, 목록 위→아래 = 화면 왼쪽→오른쪽). 드래그로 바꿀 수 있다.
 
     // 목록 드래그 재정렬(게임 인벤토리 스타일): 집은 행이 마우스에 붙고, 대상 슬롯이 실시간 표시되며, 놓으면 교체
     private ListViewItem? _dragItem;   // 눌러서 집은 행(드래그 시작 전 후보 포함)
@@ -1300,8 +1300,18 @@ public sealed class MainForm : Form
         if (_claudeGptOnly)
             _terminals = _terminals.Where(t => t.IsAi).ToList();
 
-        // 사용자가 드래그로 정한 순서 유지: 알려진 핸들은 그 순서대로, 신규 창은 탐지 순서로 뒤에
-        if (_windowOrder.Count > 0)
+        // 배치 순서 = 목록 순서(맨 위 = 화면 왼쪽). 한번 목록에 오른 창은 자리를 지키고 신규 창은 뒤에 붙는다.
+        // 탐지 순서(Z순서)는 창을 클릭할 때마다 바뀌어, 그대로 쓰면 재배치 때마다 창이 뒤섞인다.
+        // 처음 채울 때는 지금 화면 위치(왼쪽→오른쪽, 위→아래) 순으로 세워 현재 배치를 잇는다.
+        if (_windowOrder.Count == 0)
+        {
+            _terminals = _terminals
+                .Select(t => (t, ok: TilingEngine.TryGetVisibleRect(t.Handle, out var r) && !NativeMethods.IsIconic(t.Handle), r)) // 최소화 창은 맨 뒤
+                .OrderBy(x => x.ok ? 0 : 1).ThenBy(x => x.r.Left).ThenBy(x => x.r.Top)
+                .Select(x => x.t).ToList();
+            _windowOrder = _terminals.Select(t => t.Handle).ToList();
+        }
+        else
         {
             var byHandle = _terminals.ToDictionary(t => t.Handle);
             var ordered = new List<TerminalWindow>(_terminals.Count);
