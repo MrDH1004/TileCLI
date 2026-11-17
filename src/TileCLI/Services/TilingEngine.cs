@@ -136,15 +136,11 @@ public static class TilingEngine
 
     /// <summary>
     /// 자동 배치 방향 선택(요구 1): 대상 개수와 영역 가로세로 비율로 최적 방향을 고른다.
-    /// 1개는 방향 무관(꽉 채움). 2~3개는 넓으면 가로/높으면 세로. 4개 이상은 그리드.
+    /// 개수와 무관하게 넓은 영역은 세로로 긴 창을 좌우로(가로 분할), 높은 영역은 위아래로(세로 분할) 나란히 둔다.
+    /// 개수가 늘어도 그리드로 바꾸지 않는다 — 그리드는 사용자가 직접 고를 때만. 1개는 어느 쪽이든 꽉 채움.
     /// </summary>
-    public static LayoutDirection AutoDirection(int count, Rectangle area)
-    {
-        if (count <= 1) return LayoutDirection.Grid; // 단일 → 영역 전체(방향 무의미)
-        bool wide = area.Width >= area.Height;
-        if (count <= 3) return wide ? LayoutDirection.Horizontal : LayoutDirection.Vertical;
-        return LayoutDirection.Grid;
-    }
+    public static LayoutDirection AutoDirection(int count, Rectangle area) =>
+        area.Width >= area.Height ? LayoutDirection.Horizontal : LayoutDirection.Vertical;
 
     /// <summary>1/3 폭 고정 배치가 담을 수 있는 최대 창 수(3칸).</summary>
     public const int MaxThirdColumns = 3;

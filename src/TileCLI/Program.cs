@@ -410,7 +410,20 @@ internal static class SelfTest
         catch (Exception ex) { envFail++; Out($"  FAIL [env-refresh] {ex.Message}"); }
         Out($"[env-refresh] registry {(envFail == 0 ? "ok" : "FAIL")}");
 
-        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0 && envFail == 0;
+        // 12) 자동 배치 방향: 개수와 무관하게 넓으면 가로 분할(좌우 나란히), 높으면 세로 분할 — 그리드로 바꾸지 않음
+        int dirFail = 0;
+        {
+            var wide = new Rectangle(0, 0, 2560, 1392);
+            var tall = new Rectangle(0, 0, 1080, 1872);
+            foreach (int n in new[] { 1, 2, 3, 4, 6, 9 })
+            {
+                if (TilingEngine.AutoDirection(n, wide) != LayoutDirection.Horizontal) { dirFail++; Out($"  FAIL [auto-dir] wide n={n}"); }
+                if (TilingEngine.AutoDirection(n, tall) != LayoutDirection.Vertical) { dirFail++; Out($"  FAIL [auto-dir] tall n={n}"); }
+            }
+        }
+        Out($"[auto-dir] {(dirFail == 0 ? "ok" : "FAIL")}");
+
+        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0 && envFail == 0 && dirFail == 0;
         Out(pass ? "RESULT: PASS" : "RESULT: FAIL");
 
         // 콘솔 캡처가 불확실하므로 결과를 파일로도 남김

@@ -46,7 +46,7 @@ public sealed class MainForm : Form
     private const string GptResumeLegacy = "codex --continue";
     private List<MonitorTarget> _monitors = new();
     private List<LayoutProfile> _profiles = new();
-    private LayoutDirection _currentDirection = LayoutDirection.Grid;
+    private LayoutDirection _currentDirection = LayoutDirection.Horizontal; // 기본: 세로로 긴 창을 좌우로 나란히(사용자가 고르면 그 방향 유지)
     // 사용자가 마지막으로 고른 모니터(DeviceName). '지금 체크된 것'과 분리해 둔다 —
     // 부팅 직후처럼 그 모니터가 아직 안 붙어 있으면 주 모니터로 임시 폴백하지만
     // 이 목록은 그대로 남아 저장되고, 모니터가 돌아오면 다시 선택된다.
@@ -76,6 +76,9 @@ public sealed class MainForm : Form
     private readonly HashSet<IntPtr> _excluded = new();        // 수동으로 정렬 제외한 창(세션 기준)
     private bool _excludeNonAi = true;                         // 기본값: AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외
     private readonly HashSet<IntPtr> _arrangeExcluded = new(); // 실제 정렬 제외 집합(수동 ∪ AI아님옵션) — RefreshList에서 계산
+    private readonly HashSet<IntPtr> _seenHandles = new();     // 목록에 한 번이라도 오른 창(새 창 판별용)
+    private readonly HashSet<IntPtr> _autoParked = new();      // 새로 열린 일반 창이라 자동으로 최소화+제외한 창
+    private bool _seenInitialized;                             // 첫 목록 채움(앱 시작 시 이미 열린 창)은 건드리지 않음
     private ListViewGroup _grpTarget = null!;                  // "정렬 대상" 그룹(탭)
     private ListViewGroup _grpExcluded = null!;                // "제외" 그룹(탭)
     private string _selectedProfile = "";
@@ -1325,6 +1328,7 @@ public sealed class MainForm : Form
 
         // 닫힌 창은 제외 집합에서 정리
         _excluded.RemoveWhere(h => _terminals.All(t => t.Handle != h));
+        ParkNewPlainWindows();
 
         // 실제 정렬 제외 집합 = 수동 제외 ∪ (AI아님 옵션이면 Claude/GPT 아닌 창)
         _arrangeExcluded.Clear();
@@ -1460,6 +1464,35 @@ public sealed class MainForm : Form
         _sessionView.Columns[0].Width = name;
         _sessionView.Columns[1].Width = folder;
         _sessionView.Columns[2].Width = recent;
+    }
+
+    /// <summary>
+    /// 새로 열린 일반(AI 아닌) 터미널은 최소화하고 제외 그룹에 넣는다. 앱 시작 때 이미 열려 있던 창은 건드리지 않는다.
+    /// 그 창에서 나중에 claude/codex를 띄워 AI 창이 되면 제외를 풀고 다시 보이게 한다(감시 모드가 이어서 재배치).
+    /// TileCLI가 여는 세션 창은 제목에 마커(✳/codex)가 처음부터 붙어 있어 대상이 아니다.
+    /// </summary>
+    private void ParkNewPlainWindows()
+    {
+        var alive = _terminals.Select(t => t.Handle).ToHashSet();
+        _seenHandles.IntersectWith(alive);
+        _autoParked.IntersectWith(alive);
+
+        foreach (var t in _terminals)
+        {
+            if (_autoParked.Contains(t.Handle) && t.IsAi)
+            {
+                _autoParked.Remove(t.Handle);
+                // 사용자가 이미 직접 포함시킨 창이면 창 상태는 건드리지 않는다
+                if (_excluded.Remove(t.Handle) && NativeMethods.IsIconic(t.Handle))
+                    NativeMethods.ShowWindow(t.Handle, NativeMethods.SW_RESTORE);
+            }
+
+            if (!_seenHandles.Add(t.Handle) || !_seenInitialized || t.IsAi) continue;
+            _autoParked.Add(t.Handle);
+            _excluded.Add(t.Handle);
+            NativeMethods.ShowWindow(t.Handle, NativeMethods.SW_MINIMIZE);
+        }
+        _seenInitialized = true;
     }
 
     // ---- 선택 헬퍼 ----
@@ -1892,8 +1925,10 @@ public sealed class MainForm : Form
             _chkSingleThird.Checked = _singleThird;
             _chkSpan.Checked = _config.GetBool("SpanMonitors", false);
 
+            // 저장된 Grid는 예전 자동 배치가 4개 이상에서 스스로 바꿔 둔 값이다(그리드 버튼·단축키는 방향을 저장하지 않음).
+            // 사용자가 고른 방향이 아니므로 기본(가로 분할)으로 되돌린다.
             if (Enum.TryParse<LayoutDirection>(_config.GetString("Direction"), out var dir))
-                _currentDirection = dir;
+                _currentDirection = dir == LayoutDirection.Grid ? LayoutDirection.Horizontal : dir;
 
             // 모니터 선택 복원(저장된 의도 기준 — 지금 없는 모니터는 목록에 남겨 둔다)
             _desiredMonitors = _config.GetList("Monitors");

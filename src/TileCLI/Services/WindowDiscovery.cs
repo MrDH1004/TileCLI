@@ -160,16 +160,18 @@ public static class WindowDiscovery
 
     private const char BrailleFirst = (char)0x2800; // 브라유 점자 블록 시작(U+2800은 보이지 않는 문자라 코드로 표기)
     private const char BrailleLast = (char)0x28FF;  // 브라유 점자 블록 끝(U+28FF)
+    private const char HalfCircleFirst = (char)0x25D0; // ◐ (U+25D0) — Claude Code 작업 중 스피너
+    private const char HalfCircleLast = (char)0x25D3;  // ◓ (U+25D3), ◑ ◒ 포함
 
     /// <summary>
-    /// 제목이 브라유 점자 블록(U+2800–U+28FF)으로 시작하는가. Claude Code·Codex CLI가 작업 중일 때
-    /// 창 제목 접두를 이 스피너 문자로 바꾼다 → 마커 판별이 깨지는 구간의 신호로 쓴다.
+    /// 제목이 스피너 문자로 시작하는가: 브라유 점자 블록(U+2800–U+28FF) 또는 반원(◐◑◒◓, U+25D0–U+25D3).
+    /// Claude Code·Codex CLI가 작업 중일 때 창 제목 접두를 이 문자로 바꾼다 → 마커 판별이 깨지는 구간의 신호로 쓴다.
     /// </summary>
     private static bool IsSpinnerPrefixed(string title)
     {
         if (string.IsNullOrWhiteSpace(title)) return false;
         char c = title.TrimStart()[0];
-        return c >= BrailleFirst && c <= BrailleLast;
+        return (c >= BrailleFirst && c <= BrailleLast) || (c >= HalfCircleFirst && c <= HalfCircleLast);
     }
 
     /// <summary>
