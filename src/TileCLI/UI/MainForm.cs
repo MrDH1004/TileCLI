@@ -75,12 +75,14 @@ public sealed class MainForm : Form
     private bool _claudeGptOnly;   // true면 판별된 Claude/GPT 창만 목록에 표시(일반/판별불가 제외)
     private readonly HashSet<IntPtr> _excluded = new();        // 수동으로 정렬 제외한 창(세션 기준)
     private bool _excludeNonAi = true;                         // 기본값: AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외
+    private bool _minimizeExcluded = true;                     // 제외 그룹에 새로 들어간 창은 최소화
     private readonly HashSet<IntPtr> _arrangeExcluded = new(); // 실제 정렬 제외 집합(수동 ∪ AI아님옵션) — RefreshList에서 계산
     private readonly HashSet<IntPtr> _seenHandles = new();     // 목록에 한 번이라도 오른 창(새 창 판별용)
     private readonly HashSet<IntPtr> _autoParked = new();      // 새로 열린 일반 창이라 자동으로 최소화+제외한 창
     private bool _seenInitialized;                             // 첫 목록 채움(앱 시작 시 이미 열린 창)은 건드리지 않음
     private ListViewGroup _grpTarget = null!;                  // "정렬 대상" 그룹(탭)
     private ListViewGroup _grpExcluded = null!;                // "제외" 그룹(탭)
+    private GroupHeaderPainter? _groupPainter;               // 그룹 헤더 직접 그리기(참조 유지용)
     private string _selectedProfile = "";
     private OptionsForm? _optionsForm;
     private readonly ToolTip _toolTip = new();
@@ -384,6 +386,20 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>옵션 창용: 제외 그룹에 새로 들어가는 창을 최소화. 켤 때는 지금 제외된 창도 최소화한다.</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool MinimizeExcluded
+    {
+        get => _minimizeExcluded;
+        set
+        {
+            _minimizeExcluded = value;
+            SaveConfig();
+            int n = value ? MinimizeWindows(_arrangeExcluded) : 0;
+            SetStatus(value ? $"제외 항목 자동 최소화 켬 — 지금 제외된 창 {n}개 최소화." : "제외 항목 자동 최소화 끔.");
+        }
+    }
+
     public ThemeMode CurrentThemeMode => Theme.Mode;
 
     /// <summary>테마 모드 지정 + 전체 재스타일 + 저장. 옵션 창도 함께 재스타일.</summary>
@@ -478,6 +494,7 @@ public sealed class MainForm : Form
         _grpExcluded = new ListViewGroup("제외") { HeaderAlignment = HorizontalAlignment.Left };
         _listView.Groups.Add(_grpTarget);
         _listView.Groups.Add(_grpExcluded);
+        _groupPainter = new GroupHeaderPainter(_listView); // 그룹 헤더를 테마 색으로(다크 모드 가독성)
 
         _listView.ContextMenuStrip = BuildTerminalContextMenu();
         return _listView;
@@ -489,6 +506,12 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), BackColor = Theme.Bg2, ForeColor = Theme.Text };
         var toggle = new ToolStripMenuItem("정렬에서 제외", null, (_, _) => ToggleExcludeSelected());
         menu.Items.Add(toggle);
+        var minimize = new ToolStripMenuItem("창 최소화", null, (_, _) =>
+        {
+            var sel = GetSelectedTerminals();
+            SetStatus($"창 최소화: {MinimizeWindows(sel.Select(t => t.Handle))}/{sel.Count}개");
+        });
+        menu.Items.Add(minimize);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("강제 종료", null, (_, _) => ForceKillSelectedTerminals());
         // 선택 상태에 따라 제외↔포함 라벨 전환
@@ -497,6 +520,7 @@ public sealed class MainForm : Form
             var sel = GetSelectedTerminals();
             bool allExcluded = sel.Count > 0 && sel.All(t => _arrangeExcluded.Contains(t.Handle));
             toggle.Text = allExcluded ? "정렬에 포함" : "정렬에서 제외";
+            minimize.Visible = allExcluded; // 제외 항목에만
         };
         return menu;
     }
@@ -1331,10 +1355,15 @@ public sealed class MainForm : Form
         ParkNewPlainWindows();
 
         // 실제 정렬 제외 집합 = 수동 제외 ∪ (AI아님 옵션이면 Claude/GPT 아닌 창)
+        var wasExcluded = new HashSet<IntPtr>(_arrangeExcluded);
         _arrangeExcluded.Clear();
         foreach (var t in _terminals)
             if (_excluded.Contains(t.Handle) || (_excludeNonAi && !t.IsAi))
                 _arrangeExcluded.Add(t.Handle);
+
+        // 제외 그룹에 새로 들어간 창만 최소화(옵션). 시작 로드 중엔 건드리지 않고, 사용자가 다시 띄운 창은 다시 내리지 않는다.
+        if (_minimizeExcluded && _uiReady)
+            MinimizeWindows(_arrangeExcluded.Where(h => !wasExcluded.Contains(h)));
 
         _listView.BeginUpdate();
         _listView.Items.Clear();
@@ -1467,7 +1496,8 @@ public sealed class MainForm : Form
     }
 
     /// <summary>
-    /// 새로 열린 일반(AI 아닌) 터미널은 최소화하고 제외 그룹에 넣는다. 앱 시작 때 이미 열려 있던 창은 건드리지 않는다.
+    /// 새로 열린 일반(AI 아닌) 터미널은 제외 그룹에 넣는다(최소화는 '제외 항목 자동 최소화' 옵션이 맡음).
+    /// 앱 시작 때 이미 열려 있던 창은 건드리지 않는다.
     /// 그 창에서 나중에 claude/codex를 띄워 AI 창이 되면 제외를 풀고 다시 보이게 한다(감시 모드가 이어서 재배치).
     /// TileCLI가 여는 세션 창은 제목에 마커(✳/codex)가 처음부터 붙어 있어 대상이 아니다.
     /// </summary>
@@ -1490,9 +1520,17 @@ public sealed class MainForm : Form
             if (!_seenHandles.Add(t.Handle) || !_seenInitialized || t.IsAi) continue;
             _autoParked.Add(t.Handle);
             _excluded.Add(t.Handle);
-            NativeMethods.ShowWindow(t.Handle, NativeMethods.SW_MINIMIZE);
         }
         _seenInitialized = true;
+    }
+
+    /// <summary>창들을 최소화(이미 최소화된 창은 건너뜀). 최소화한 개수를 돌려준다.</summary>
+    private static int MinimizeWindows(IEnumerable<IntPtr> handles)
+    {
+        int n = 0;
+        foreach (var h in handles.ToList())
+            if (!NativeMethods.IsIconic(h) && NativeMethods.ShowWindow(h, NativeMethods.SW_MINIMIZE)) n++;
+        return n;
     }
 
     // ---- 선택 헬퍼 ----
@@ -1885,6 +1923,7 @@ public sealed class MainForm : Form
         _config.SetBool("LinkAdjacent", _linkAdjacent);
         _config.SetBool("ClaudeGptOnly", _claudeGptOnly);
         _config.SetBool("ExcludeNonAi", _excludeNonAi);
+        _config.SetBool("MinimizeExcluded", _minimizeExcluded);
         _config.SetBool("WatchMode", _watchMode);
         _config.SetBool("SingleThird", _singleThird);
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
@@ -1917,6 +1956,7 @@ public sealed class MainForm : Form
             _linkAdjacent = _config.GetBool("LinkAdjacent", true);
             _claudeGptOnly = _config.GetBool("ClaudeGptOnly", false);
             _excludeNonAi = _config.GetBool("ExcludeNonAi", true);
+            _minimizeExcluded = _config.GetBool("MinimizeExcluded", true);
             _chkLink.Checked = _linkAdjacent;
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
