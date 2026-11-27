@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using TileCLI.Models;
 
 namespace TileCLI.Services;
@@ -51,13 +52,15 @@ public static class ClaudeSessionService
     /// 대상이 아니기 때문이다(codex resume picker도 비대화 세션을 기본 제외한다).
     /// 창 분류용 힌트처럼 "그 폴더에서 codex가 활동했다"는 사실만 필요할 때는 true로 켠다.
     /// </param>
+    /// <param name="geminiDir">Gemini 세션 루트(빈값 → ~/.gemini/tmp). 셀프테스트용.</param>
     public static List<ClaudeSession> GetRecent(int max = 20, IEnumerable<string>? hiddenCwds = null,
-        string? gptSessionsDir = null, bool includeSubagent = false)
+        string? gptSessionsDir = null, bool includeSubagent = false, string? geminiDir = null)
     {
         var hidden = new HashSet<string>(hiddenCwds ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
         var all = new List<ClaudeSession>();
         all.AddRange(ScanClaude(hidden));
         all.AddRange(ScanGpt(gptSessionsDir, hidden, includeSubagent));
+        all.AddRange(ScanGemini(geminiDir, hidden, includeSubagent));
         all.Sort((a, b) => b.LastActive.CompareTo(a.LastActive));
         if (all.Count > max) all.RemoveRange(max, all.Count - max);
         return all;
@@ -123,6 +126,114 @@ public static class ClaudeSessionService
         }
         result.AddRange(byCwd.Values);
         return result;
+    }
+
+    /// <summary>Gemini CLI 프로젝트별 임시 루트(~/.gemini/tmp).</summary>
+    public static string GeminiRoot =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gemini", "tmp");
+
+    private static readonly Regex GeminiSessionIdRx = new("\"sessionId\"\\s*:\\s*\"([0-9a-fA-F-]{36})\"", RegexOptions.Compiled);
+    private static readonly Regex GeminiKindRx = new("\"kind\"\\s*:\\s*\"([A-Za-z_]+)\"", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Gemini 세션 스캔(cwd별 최신 1개, Kind=Gemini). 관측 구조(gemini-cli 0.71):
+    /// ~/.gemini/tmp/&lt;프로젝트&gt;/.project_root = 작업 폴더(소문자로 저장),
+    /// ~/.gemini/tmp/&lt;프로젝트&gt;/chats/session-&lt;시각&gt;-&lt;id8&gt;.jsonl, 첫 줄
+    /// <c>{"sessionId":"&lt;uuid&gt;","projectHash":…,"kind":"main"}</c>. 구버전 .json도 같은 키를 앞쪽에 둔다.
+    /// </summary>
+    private static List<ClaudeSession> ScanGemini(string? dir, HashSet<string> hidden, bool includeSubagent)
+    {
+        var result = new List<ClaudeSession>();
+        string root = string.IsNullOrWhiteSpace(dir) ? GeminiRoot : dir!;
+        if (!Directory.Exists(root)) return result;
+
+        var byCwd = new Dictionary<string, ClaudeSession>(StringComparer.OrdinalIgnoreCase);
+        foreach (var proj in SafeEnumerateDirectories(root))
+        {
+            string chats = Path.Combine(proj, "chats");
+            string marker = Path.Combine(proj, ".project_root");
+            if (!Directory.Exists(chats) || !File.Exists(marker)) continue;
+
+            string cwd;
+            try { cwd = RealCasePath(File.ReadAllText(marker).Trim()); }
+            catch (IOException) { continue; }
+            catch (UnauthorizedAccessException) { continue; }
+            if (cwd.Length == 0 || !Directory.Exists(cwd) || hidden.Contains(cwd)) continue;
+
+            IEnumerable<FileInfo> files;
+            try
+            {
+                files = new DirectoryInfo(chats).EnumerateFiles("session-*")
+                    .Where(f => f.Extension.Equals(".jsonl", StringComparison.OrdinalIgnoreCase)
+                             || f.Extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(f => f.LastWriteTimeUtc)
+                    .ToList();
+            }
+            catch (IOException) { continue; }
+            catch (UnauthorizedAccessException) { continue; }
+
+            foreach (var f in files)
+            {
+                string head;
+                try { head = ReadHead(f.FullName, 4096); }
+                catch (IOException) { continue; }
+                catch (UnauthorizedAccessException) { continue; }
+                var id = GeminiSessionIdRx.Match(head);
+                if (!id.Success) continue;
+                var kind = GeminiKindRx.Match(head);
+                bool sub = kind.Success && !kind.Groups[1].Value.Equals("main", StringComparison.OrdinalIgnoreCase);
+                if (sub && !includeSubagent) continue;
+
+                var s = new ClaudeSession
+                {
+                    SessionId = id.Groups[1].Value,
+                    Cwd = cwd,
+                    LastActive = f.LastWriteTime,
+                    TranscriptPath = f.FullName,
+                    Kind = TerminalKind.Gemini
+                };
+                if (!byCwd.TryGetValue(cwd, out var ex) || s.LastActive > ex.LastActive) byCwd[cwd] = s;
+                break; // 최신순 정렬이라 첫 유효 세션이 그 프로젝트의 최신
+            }
+        }
+        result.AddRange(byCwd.Values);
+        return result;
+    }
+
+    /// <summary>파일 앞부분을 공유 모드로 최대 maxChars자 읽는다(실행 중인 CLI가 쓰는 파일 포함).</summary>
+    private static string ReadHead(string path, int maxChars)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(fs);
+        var buf = new char[maxChars];
+        int n = reader.ReadBlock(buf, 0, maxChars);
+        return new string(buf, 0, n);
+    }
+
+    /// <summary>
+    /// 디스크의 실제 대소문자로 경로를 되살린다. Gemini는 .project_root에 소문자로 저장해
+    /// 그대로 쓰면 목록의 폴더명이 소문자로 보인다. 구간을 못 찾으면 받은 경로를 그대로 돌려준다.
+    /// </summary>
+    internal static string RealCasePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+        try
+        {
+            string full = Path.GetFullPath(path).TrimEnd('\\', '/');
+            string? rootPart = Path.GetPathRoot(full);
+            if (string.IsNullOrEmpty(rootPart)) return full;
+            string current = rootPart.ToUpperInvariant();
+            foreach (var part in full[rootPart.Length..].Split('\\', '/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var match = Directory.EnumerateFileSystemEntries(current, part).FirstOrDefault();
+                if (match is null) return full;
+                current = match;
+            }
+            return current;
+        }
+        catch (IOException) { return path; }
+        catch (UnauthorizedAccessException) { return path; }
+        catch (ArgumentException) { return path; }
     }
 
     /// <summary>
@@ -208,7 +319,8 @@ public static class ClaudeSessionService
     public static string? DeleteTarget(ClaudeSession session)
     {
         if (session is null || string.IsNullOrEmpty(session.TranscriptPath)) return null;
-        return session.Kind == TerminalKind.Gpt
+        // Gemini도 파일 하나만: 같은 chats 폴더에 그 프로젝트의 다른 세션이 함께 있다.
+        return session.Kind is TerminalKind.Gpt or TerminalKind.Gemini
             ? session.TranscriptPath
             : Path.GetDirectoryName(session.TranscriptPath);
     }
@@ -221,7 +333,8 @@ public static class ClaudeSessionService
     public static bool DeleteSessionStorage(ClaudeSession session, out string error, string? gptSessionsDir = null)
     {
         error = string.Empty;
-        bool isGpt = session?.Kind == TerminalKind.Gpt;
+        bool isGemini = session?.Kind == TerminalKind.Gemini;
+        bool isGpt = session?.Kind == TerminalKind.Gpt || isGemini; // 파일 단위 삭제
         var target = DeleteTarget(session!);
         bool exists = !string.IsNullOrEmpty(target) && (isGpt ? File.Exists(target) : Directory.Exists(target));
         if (!exists)
@@ -231,15 +344,15 @@ public static class ClaudeSessionService
         }
 
         // 안전 검사: 그 CLI의 세션 루트 하위인지 확인
-        string rootPath = isGpt
-            ? (string.IsNullOrWhiteSpace(gptSessionsDir) ? GptSessionsRoot : gptSessionsDir!)
+        string rootPath = isGemini ? GeminiRoot
+            : isGpt ? (string.IsNullOrWhiteSpace(gptSessionsDir) ? GptSessionsRoot : gptSessionsDir!)
             : ProjectsRoot;
         string root = Path.GetFullPath(rootPath).TrimEnd('\\', '/');
         string full = Path.GetFullPath(target!).TrimEnd('\\', '/');
         if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
             full.Equals(root, StringComparison.OrdinalIgnoreCase))
         {
-            error = $"안전 검사 실패 — {(isGpt ? "codex 세션" : "projects")} 루트 하위가 아니거나 루트 자체입니다: {full}";
+            error = $"안전 검사 실패 — {(isGemini ? "gemini tmp" : isGpt ? "codex 세션" : "projects")} 루트 하위가 아니거나 루트 자체입니다: {full}";
             return false;
         }
 

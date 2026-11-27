@@ -22,14 +22,14 @@ public static class Theme
     private static readonly Color DBgHeader = C(0x2A, 0x30, 0x3A), DBorder = C(0x33, 0x3A, 0x45), DBorderHi = C(0x45, 0x4E, 0x5C);
     private static readonly Color DText = C(0xE7, 0xEA, 0xF0), DTextDim = C(0x97, 0xA1, 0xB2), DHover = C(0x30, 0x37, 0x3F);
     private static readonly Color DGold = C(0xFD, 0xCF, 0x18), DGoldSoft = C(0xE6, 0xC2, 0x55);
-    private static readonly Color DClaude = C(0xE0, 0x91, 0x3E), DGpt = C(0x40, 0xC0, 0x88);
+    private static readonly Color DClaude = C(0xE0, 0x91, 0x3E), DGpt = C(0x40, 0xC0, 0x88), DGemini = C(0x6E, 0xA0, 0xF8);
 
     // ---- 라이트 팔레트 ----
     private static readonly Color LBg = C(0xEE, 0xF1, 0xF6), LBg2 = C(0xFF, 0xFF, 0xFF), LBg3 = C(0xFF, 0xFF, 0xFF);
     private static readonly Color LBgHeader = C(0xEC, 0xF0, 0xF6), LBorder = C(0xD5, 0xDB, 0xE4), LBorderHi = C(0xBA, 0xC2, 0xCE);
     private static readonly Color LText = C(0x20, 0x26, 0x2F), LTextDim = C(0x5C, 0x66, 0x75), LHover = C(0xE4, 0xE9, 0xF0);
     private static readonly Color LGold = C(0xD9, 0xA4, 0x00), LGoldSoft = C(0x9C, 0x74, 0x13);
-    private static readonly Color LClaude = C(0xB8, 0x5C, 0x00), LGpt = C(0x0A, 0x7A, 0x4A);
+    private static readonly Color LClaude = C(0xB8, 0x5C, 0x00), LGpt = C(0x0A, 0x7A, 0x4A), LGemini = C(0x1A, 0x5C, 0xD0);
 
     // 공통(모드 무관)
     public static Color Accent => C(0x2E, 0x6B, 0xE6);      // 네이비-블루(선택/호버)
@@ -49,6 +49,7 @@ public static class Theme
     public static Color GoldSoft => IsDark ? DGoldSoft : LGoldSoft;
     public static Color Claude => IsDark ? DClaude : LClaude;
     public static Color Gpt => IsDark ? DGpt : LGpt;
+    public static Color Gemini => IsDark ? DGemini : LGemini;
 
     public static readonly Font Base = new("Segoe UI", 9F);
     public static readonly Font Header = new("Segoe UI Semibold", 9.5F, FontStyle.Bold);

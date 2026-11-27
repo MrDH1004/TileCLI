@@ -1,10 +1,11 @@
 using System.Drawing;
 using System.Windows.Forms;
+using TileCLI.Models;
 
 namespace TileCLI.UI;
 
 /// <summary>
-/// 새 프로젝트 다이얼로그: 작업 폴더(상위) + 프로젝트 이름(새 폴더) + 시작할 CLI(Claude/GPT)를 받는다.
+/// 새 프로젝트 다이얼로그: 작업 폴더(상위) + 프로젝트 이름(새 폴더) + 시작할 CLI(Claude/GPT/Gemini)를 받는다.
 /// 작업 폴더와 마지막 CLI 선택은 호출 측이 config에 기억해 다음에 기본값으로 넘긴다.
 /// </summary>
 internal sealed class NewProjectDialog : Form
@@ -13,12 +14,13 @@ internal sealed class NewProjectDialog : Form
     private readonly TextBox _name;
     private readonly RadioButton _claude;
     private readonly RadioButton _gpt;
+    private readonly RadioButton _gemini;
 
     public string Root => _root.Text.Trim();
     public string ProjectName => _name.Text.Trim();
-    public bool UseGpt => _gpt.Checked;
+    public TerminalKind Kind => _gpt.Checked ? TerminalKind.Gpt : _gemini.Checked ? TerminalKind.Gemini : TerminalKind.Claude;
 
-    public NewProjectDialog(string root, bool gpt)
+    public NewProjectDialog(string root, TerminalKind kind)
     {
         Text = "새 프로젝트";
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -38,14 +40,15 @@ internal sealed class NewProjectDialog : Form
         _name = new TextBox { Location = new Point(12, 94), Size = new Size(396, 24) };
 
         var lblKind = new Label { Text = "어떤 CLI로 시작할까요?", AutoSize = true, Location = new Point(12, 130) };
-        _claude = new RadioButton { Text = "Claude", AutoSize = true, Location = new Point(16, 152), Checked = !gpt };
-        _gpt = new RadioButton { Text = "GPT (codex)", AutoSize = true, Location = new Point(120, 152), Checked = gpt };
+        _claude = new RadioButton { Text = "Claude", AutoSize = true, Location = new Point(16, 152), Checked = kind is not (TerminalKind.Gpt or TerminalKind.Gemini) };
+        _gpt = new RadioButton { Text = "GPT (codex)", AutoSize = true, Location = new Point(120, 152), Checked = kind == TerminalKind.Gpt };
+        _gemini = new RadioButton { Text = "Gemini", AutoSize = true, Location = new Point(250, 152), Checked = kind == TerminalKind.Gemini };
 
         var ok = new RoundedButton { Text = "만들고 시작", Size = new Size(100, 30), Location = new Point(216, 178) };
         var cancel = new RoundedButton { Text = "취소", Size = new Size(84, 30), Location = new Point(324, 178), DialogResult = DialogResult.Cancel };
         ok.Click += (_, _) => { if (Validate(out string msg)) { DialogResult = DialogResult.OK; Close(); } else ShowError(msg); };
 
-        Controls.AddRange(new Control[] { lblRoot, _root, browse, lblName, _name, lblKind, _claude, _gpt, ok, cancel });
+        Controls.AddRange(new Control[] { lblRoot, _root, browse, lblName, _name, lblKind, _claude, _gpt, _gemini, ok, cancel });
         AcceptButton = ok;
         CancelButton = cancel;
 

@@ -50,6 +50,23 @@ public static class WindowDiscovery
     public static readonly IReadOnlyList<string> DefaultGptTitleMarkers = new[] { "codex", "gpt" };
 
     /// <summary>
+    /// Gemini CLI가 창 제목 맨 앞에 쓰는 상태 아이콘(gemini-cli 0.71 computeTerminalTitle 실측):
+    /// ◇ Ready(U+25C7), ✦ 작업 중(U+2726), ✋ 승인 필요(U+270B), ⏲ 조용히 작업 중(U+23F2).
+    /// 형식: "&lt;아이콘&gt;  &lt;상태&gt; (&lt;폴더명&gt;)" + 80자까지 공백 채움. 동적 제목을 끄면 "Gemini CLI (&lt;폴더명&gt;)".
+    /// </summary>
+    private static readonly char[] GeminiStatusIcons = { (char)0x25C7, (char)0x2726, (char)0x270B, (char)0x23F2 };
+
+    /// <summary>Gemini 창 제목인가: 상태 아이콘 + 두 칸 공백, 또는 "gemini" 접두(TileCLI가 연 창·동적 제목 꺼짐).</summary>
+    internal static bool IsGeminiTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+        string t = title.TrimStart();
+        if (t.StartsWith("gemini", StringComparison.OrdinalIgnoreCase)) return true;
+        // 아이콘 한 글자만으로 판정하지 않고 Gemini 고유 형식(아이콘 뒤 공백 두 칸)까지 본다 → 일반 창 오탐 방지
+        return t.Length > 3 && Array.IndexOf(GeminiStatusIcons, t[0]) >= 0 && t[1] == ' ' && t[2] == ' ';
+    }
+
+    /// <summary>
     /// 터미널 창을 탐지·분류한다. Windows Terminal은 모든 창이 한 프로세스라 프로세스 트리로는
     /// 창별 구분이 안 되므로, 창 제목 접두 마커로 먼저 판별하고(창별 정확), 못 잡으면 프로세스 트리로 폴백한다.
     /// </summary>
@@ -122,7 +139,7 @@ public static class WindowDiscovery
                 }
 
                 // 확정된 종류만 기억(미상 AI는 저장하지 않는다 → 나중에 마커가 보이면 그때 확정).
-                if (kind is TerminalKind.Claude or TerminalKind.Gpt)
+                if (kind is TerminalKind.Claude or TerminalKind.Gpt or TerminalKind.Gemini)
                     KindCache[hWnd] = (kind, pid);
                 seen.Add(hWnd);
 
@@ -183,14 +200,24 @@ public static class WindowDiscovery
         string body = TitleBody(title);
         if (body.Length == 0) return TerminalKind.Unknown;
         var hints = GetSessionHints(gptSessionsDir);
-        return hints.TryGetValue(body, out var kind) && kind is TerminalKind.Claude or TerminalKind.Gpt
+        return hints.TryGetValue(body, out var kind) && kind is TerminalKind.Claude or TerminalKind.Gpt or TerminalKind.Gemini
             ? kind : TerminalKind.Unknown;
     }
 
-    /// <summary>제목에서 스피너 접두 한 글자와 앞뒤 공백을 걷어낸 본문.</summary>
-    private static string TitleBody(string title)
+    /// <summary>
+    /// 제목에서 스피너 접두 한 글자와 앞뒤 공백을 걷어낸 본문.
+    /// Gemini 제목("◇  Ready (폴더)")은 마지막 괄호 안의 폴더명을 본문으로 본다.
+    /// </summary>
+    internal static string TitleBody(string title)
     {
         string t = title.TrimStart();
+        if (IsGeminiTitle(t))
+        {
+            string trimmed = t.TrimEnd();
+            int close = trimmed.LastIndexOf(')');
+            int open = close > 0 ? trimmed.LastIndexOf('(', close - 1) : -1;
+            if (open >= 0 && close == trimmed.Length - 1) return trimmed[(open + 1)..close].Trim();
+        }
         if (t.Length > 0 && t[0] >= BrailleFirst && t[0] <= BrailleLast) t = t[1..];
         return t.Trim();
     }
@@ -240,11 +267,12 @@ public static class WindowDiscovery
     }
 
     /// <summary>창 제목 접두 마커로 분류(창별 정확). 못 맞추면 Unknown → 호출부가 프로세스 트리로 폴백.</summary>
-    private static TerminalKind ClassifyByTitle(string title,
+    internal static TerminalKind ClassifyByTitle(string title,
         IReadOnlyCollection<string> claudeMarkers, IReadOnlyCollection<string> gptMarkers)
     {
         if (string.IsNullOrWhiteSpace(title)) return TerminalKind.Unknown;
         string t = title.TrimStart();
+        if (IsGeminiTitle(t)) return TerminalKind.Gemini;
         foreach (var m in gptMarkers)
             if (!string.IsNullOrWhiteSpace(m) && t.StartsWith(m, StringComparison.OrdinalIgnoreCase))
                 return TerminalKind.Gpt;

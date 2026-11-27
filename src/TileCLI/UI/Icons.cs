@@ -13,7 +13,7 @@ public enum IconKind
     // 작업 세트
     Save, Apply,
     // 세션 종류 표시
-    Claude, Gpt,
+    Claude, Gpt, Gemini,
     // 새 프로젝트(폴더 + 플러스)
     NewProject
 }
@@ -216,6 +216,22 @@ public static class Icons
                 using var gp = new GraphicsPath { FillMode = FillMode.Alternate };
                 gp.AddPolygon(outer);
                 gp.AddPolygon(inner);   // Alternate라 안쪽 육각이 구멍이 된다
+                g.FillPath(brush, gp);
+                break;
+            }
+
+            case IconKind.Gemini: // 네 꼭짓점 별 — Gemini 마크(✦)의 오목한 4각 별
+            {
+                float cx = s / 2f, cy = s / 2f, r = s * 0.46f, k = s * 0.08f;
+                using var gp = new GraphicsPath();
+                var top = new PointF(cx, cy - r); var right = new PointF(cx + r, cy);
+                var bottom = new PointF(cx, cy + r); var left = new PointF(cx - r, cy);
+                // 꼭짓점 사이를 중심 쪽으로 휜 베지어로 이어 오목한 별을 만든다
+                gp.AddBezier(top, new PointF(cx + k, cy - k), new PointF(cx + k, cy - k), right);
+                gp.AddBezier(right, new PointF(cx + k, cy + k), new PointF(cx + k, cy + k), bottom);
+                gp.AddBezier(bottom, new PointF(cx - k, cy + k), new PointF(cx - k, cy + k), left);
+                gp.AddBezier(left, new PointF(cx - k, cy - k), new PointF(cx - k, cy - k), top);
+                gp.CloseFigure();
                 g.FillPath(brush, gp);
                 break;
             }

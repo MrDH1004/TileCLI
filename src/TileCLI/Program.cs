@@ -423,7 +423,51 @@ internal static class SelfTest
         }
         Out($"[auto-dir] {(dirFail == 0 ? "ok" : "FAIL")}");
 
-        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0 && envFail == 0 && dirFail == 0;
+        // 13) Gemini: 창 제목 분류(gemini-cli 상태 아이콘 형식) + 폴더명 추출 + 세션 스캔(~/.gemini/tmp 구조)
+        int gemFail = 0;
+        {
+            void GChk(bool ok, string name) { if (!ok) { gemFail++; Out($"  FAIL [gemini] {name}"); } }
+            var cm = WindowDiscovery.DefaultClaudeTitleMarkers;
+            var gm = WindowDiscovery.DefaultGptTitleMarkers;
+            string pad(string x) => x.PadRight(80);
+            GChk(WindowDiscovery.ClassifyByTitle(pad("◇  Ready (gemtest)"), cm, gm) == Models.TerminalKind.Gemini, "ready title");
+            GChk(WindowDiscovery.ClassifyByTitle(pad("✦  Working… (gemtest)"), cm, gm) == Models.TerminalKind.Gemini, "working title");
+            GChk(WindowDiscovery.ClassifyByTitle(pad("✋  Action Required (gemtest)"), cm, gm) == Models.TerminalKind.Gemini, "action title");
+            GChk(WindowDiscovery.ClassifyByTitle(pad("⏲  Working… (gemtest)"), cm, gm) == Models.TerminalKind.Gemini, "silent working title");
+            GChk(WindowDiscovery.ClassifyByTitle("gemini myproj", cm, gm) == Models.TerminalKind.Gemini, "launched title");
+            GChk(WindowDiscovery.ClassifyByTitle(pad("Gemini CLI (gemtest)"), cm, gm) == Models.TerminalKind.Gemini, "static title");
+            GChk(WindowDiscovery.ClassifyByTitle("✳ TileCLI", cm, gm) == Models.TerminalKind.Claude, "claude title unaffected");
+            GChk(WindowDiscovery.ClassifyByTitle("codex proj", cm, gm) == Models.TerminalKind.Gpt, "gpt title unaffected");
+            GChk(WindowDiscovery.ClassifyByTitle("◇ notes", cm, gm) == Models.TerminalKind.Unknown, "icon + single space is not gemini");
+            GChk(WindowDiscovery.TitleBody(pad("◇  Ready (my proj)")) == "my proj", "title body = folder");
+            try
+            {
+                string tmpRoot = Path.Combine(Path.GetTempPath(), $"tilecli_gem_{Environment.ProcessId}");
+                string cwd = AppContext.BaseDirectory.TrimEnd('\\', '/');
+                string proj = Path.Combine(tmpRoot, "proj1");
+                Directory.CreateDirectory(Path.Combine(proj, "chats"));
+                File.WriteAllText(Path.Combine(proj, ".project_root"), cwd.ToLowerInvariant());
+                const string id = "b759ebf1-49cc-4ecc-8857-4c403987eac2";
+                File.WriteAllText(Path.Combine(proj, "chats", "session-2026-11-27T03-44-b759ebf1.jsonl"),
+                    "{\"sessionId\":\"" + id + "\",\"projectHash\":\"x\",\"kind\":\"main\"}\n");
+                try
+                {
+                    var list = ClaudeSessionService.GetRecent(200, null, null, false, tmpRoot);
+                    var hit = list.FirstOrDefault(s => s.Kind == Models.TerminalKind.Gemini);
+                    GChk(hit is not null, "session scanned");
+                    if (hit is not null)
+                    {
+                        GChk(hit.ResumeId == id, $"resume id ({hit.ResumeId})");
+                        GChk(string.Equals(hit.Cwd, cwd, StringComparison.Ordinal), $"cwd real case ({hit.Cwd})");
+                    }
+                }
+                finally { try { Directory.Delete(tmpRoot, true); } catch { } }
+            }
+            catch (Exception ex) { gemFail++; Out($"  FAIL [gemini] {ex.Message}"); }
+        }
+        Out($"[gemini] title/session {(gemFail == 0 ? "ok" : "FAIL")}");
+
+        bool pass = failures == 0 && gridFail == 0 && rfFail == 0 && wsFail == 0 && watchFail == 0 && planFail == 0 && gptFail == 0 && claudeFail == 0 && envFail == 0 && dirFail == 0 && gemFail == 0;
         Out(pass ? "RESULT: PASS" : "RESULT: FAIL");
 
         // 콘솔 캡처가 불확실하므로 결과를 파일로도 남김

@@ -39,7 +39,12 @@ public sealed class MainForm : Form
     private string _gptResumeCmd = GptResumeDefault;
     private string _gptNewCmd = "codex";               // GPT 세션 새로 열기 명령
     private string _projectsRoot = string.Empty;       // 새 프로젝트를 만들 작업 폴더(마지막 선택)
-    private bool _newProjectGpt;                       // 새 프로젝트 마지막 CLI 선택(true=GPT)
+    private TerminalKind _newProjectKind = TerminalKind.Claude; // 새 프로젝트 마지막 CLI 선택
+    // Gemini 이어하기 명령. {id}는 세션 UUID(gemini-cli 0.71: --resume latest|번호|uuid). id 없으면 latest.
+    private string _geminiResumeCmd = GeminiResumeDefault;
+    private string _geminiNewCmd = "gemini";           // Gemini 새 세션 명령
+    private const string GeminiResumeDefault = "gemini --resume {id}";
+    private const string GeminiResumeLast = "gemini --resume latest";
 
     private const string GptResumeDefault = "codex resume {id}";
     private const string GptResumeLast = "codex resume --last"; // 세션 id를 못 구했을 때 폴백
@@ -141,6 +146,8 @@ public sealed class MainForm : Form
         if (string.Equals(_gptResumeCmd.Trim(), GptResumeLegacy, StringComparison.OrdinalIgnoreCase))
             _gptResumeCmd = GptResumeDefault; // 동작하지 않는 옛 값 마이그레이션
         var gptNew = _config.GetString("GptNewCmd"); if (!string.IsNullOrWhiteSpace(gptNew)) _gptNewCmd = gptNew;
+        var gemResume = _config.GetString("GeminiResumeCmd"); if (!string.IsNullOrWhiteSpace(gemResume)) _geminiResumeCmd = gemResume;
+        var gemNew = _config.GetString("GeminiNewCmd"); if (!string.IsNullOrWhiteSpace(gemNew)) _geminiNewCmd = gemNew;
         if (string.Equals(_config.GetString("Theme"), "Light", StringComparison.OrdinalIgnoreCase))
             Theme.SetMode(ThemeMode.Light);
 
@@ -884,7 +891,7 @@ public sealed class MainForm : Form
 
         var bar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
         bar.Controls.Add(new Label { Text = "최근 세션", AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Padding = new Padding(2, 8, 8, 0), Tag = "gold" });
-        bar.Controls.Add(MakeIconButton(IconKind.OpenNew, 38, (_, _) => ResumeSelectedSessions(), "선택 세션 이어서 복구 (Claude=claude -c / GPT=codex, 새 터미널)"));
+        bar.Controls.Add(MakeIconButton(IconKind.OpenNew, 38, (_, _) => ResumeSelectedSessions(), "선택 세션 이어서 복구 (Claude=claude -c / GPT=codex resume / Gemini=gemini --resume, 새 터미널)"));
         bar.Controls.Add(MakeIconButton(IconKind.NewProject, 38, (_, _) => NewProject(), "새 프로젝트 — 작업 폴더에 새 폴더를 만들고 Claude/GPT 세션 시작"));
         bar.Controls.Add(MakeIconButton(IconKind.Refresh, 38, (_, _) => RefreshSessions(), "최근 클로드 세션 목록 새로고침"));
         // 삭제 드롭다운(앱에서 삭제 / 저장폴더 삭제)
@@ -1121,6 +1128,7 @@ public sealed class MainForm : Form
         var list = new ImageList { ImageSize = new Size(px, px), ColorDepth = ColorDepth.Depth32Bit };
         list.Images.Add(Icons.Draw(IconKind.Claude, px, Theme.Claude));
         list.Images.Add(Icons.Draw(IconKind.Gpt, px, Theme.Gpt));
+        list.Images.Add(Icons.Draw(IconKind.Gemini, px, Theme.Gemini));
 
         var old = _sessionIcons;
         _sessionIcons = list;
@@ -1420,6 +1428,7 @@ public sealed class MainForm : Form
                 {
                     TerminalKind.Claude => Theme.Claude,
                     TerminalKind.Gpt => Theme.Gpt,
+                    TerminalKind.Gemini => Theme.Gemini,
                     TerminalKind.Ai => Theme.Text,   // AI지만 종류 미상: 강조색 없이 본문색
                     _ => Theme.TextDim
                 };
@@ -1441,8 +1450,10 @@ public sealed class MainForm : Form
         FitTerminalColumns();
         int claudeCount = _terminals.Count(t => t.Kind == TerminalKind.Claude);
         int gptCount = _terminals.Count(t => t.Kind == TerminalKind.Gpt);
+        int geminiCount = _terminals.Count(t => t.Kind == TerminalKind.Gemini);
         int aiCount = _terminals.Count(t => t.Kind == TerminalKind.Ai);
-        string kinds = $"Claude {claudeCount}, GPT {gptCount}" + (aiCount > 0 ? $", AI {aiCount}" : "");
+        string kinds = $"Claude {claudeCount}, GPT {gptCount}" + (geminiCount > 0 ? $", Gemini {geminiCount}" : "")
+            + (aiCount > 0 ? $", AI {aiCount}" : "");
         _lblCount.Text = $"터미널 {_terminals.Count}개 ({kinds})";
         UpdateToggleAllButton();
         SetStatus($"목록 갱신: {_terminals.Count}개 탐지 ({kinds}).");
@@ -1476,15 +1487,14 @@ public sealed class MainForm : Form
         _sessionView.Items.Clear();
         foreach (var s in sessions)
         {
-            // 앞머리에 종류 아이콘(Claude 스파크 / GPT 육각) + GPT는 초록 글자로 구분.
-            bool isGpt = s.Kind == TerminalKind.Gpt;
-            var color = isGpt ? Theme.Gpt : Theme.Text;
+            // 앞머리에 종류 아이콘(Claude 스파크 / GPT 육각 / Gemini 별) + GPT·Gemini는 글자색으로도 구분.
+            var color = s.Kind switch { TerminalKind.Gpt => Theme.Gpt, TerminalKind.Gemini => Theme.Gemini, _ => Theme.Text };
             var it = new ListViewItem(s.DisplayLabel)
             {
                 Tag = s,
-                ToolTipText = $"[{(isGpt ? "GPT" : "Claude")}] {s.Cwd}",
+                ToolTipText = $"[{KindName(s.Kind)}] {s.Cwd}",
                 ForeColor = color,
-                ImageIndex = isGpt ? 1 : 0
+                ImageIndex = s.Kind switch { TerminalKind.Gpt => 1, TerminalKind.Gemini => 2, _ => 0 }
             };
             it.SubItems.Add(s.Cwd);
             it.SubItems.Add(s.LastActive.ToString("yyyy-MM-dd HH:mm"));
@@ -1493,7 +1503,7 @@ public sealed class MainForm : Form
         _sessionView.EndUpdate();
         FitSessionColumns();
         if (sessions.Count == 0)
-            SetStatus("최근 세션 없음 (Claude ~/.claude/projects · GPT ~/.codex/sessions).");
+            SetStatus("최근 세션 없음 (Claude ~/.claude/projects · GPT ~/.codex/sessions · Gemini ~/.gemini/tmp).");
     }
 
     /// <summary>
@@ -1765,8 +1775,8 @@ public sealed class MainForm : Form
         foreach (var s in sel)
         {
             // 종류별 이어서-복구 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
-            string cmd = s.Kind == TerminalKind.Gpt ? BuildGptResumeCmd(s) : "claude -c";
-            string title = (s.Kind == TerminalKind.Gpt ? "codex " : "✳ ") + SessionWindowTitle(s);
+            string cmd = ResumeCmdFor(s);
+            string title = KindPrefix(s.Kind) + SessionWindowTitle(s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
 
@@ -1790,17 +1800,64 @@ public sealed class MainForm : Form
             : GptResumeLast;
     }
 
-    /// <summary>선택한 세션의 폴더에서 새 세션을 연다(Claude=claude, GPT=config 명령).</summary>
+    /// <summary>Gemini 이어하기 명령: {id}를 세션 UUID로 치환, 못 구하면 그 폴더의 최근 세션(latest).</summary>
+    private string BuildGeminiResumeCmd(ClaudeSession s)
+    {
+        if (!_geminiResumeCmd.Contains("{id}", StringComparison.OrdinalIgnoreCase))
+            return _geminiResumeCmd;
+        string id = s.ResumeId;
+        return id.Length > 0
+            ? _geminiResumeCmd.Replace("{id}", id, StringComparison.OrdinalIgnoreCase)
+            : GeminiResumeLast;
+    }
+
+    /// <summary>세션 종류별 이어하기 명령.</summary>
+    private string ResumeCmdFor(ClaudeSession s) => s.Kind switch
+    {
+        TerminalKind.Gpt => BuildGptResumeCmd(s),
+        TerminalKind.Gemini => BuildGeminiResumeCmd(s),
+        _ => "claude -c"
+    };
+
+    /// <summary>종류별 새 세션 명령.</summary>
+    private string NewCmdFor(TerminalKind k) => k switch
+    {
+        TerminalKind.Gpt => _gptNewCmd,
+        TerminalKind.Gemini => _geminiNewCmd,
+        _ => "claude"
+    };
+
+    /// <summary>TileCLI가 여는 창의 WT 탭 제목 접두(창 분류 마커와 같음).</summary>
+    private static string KindPrefix(TerminalKind k) => k switch
+    {
+        TerminalKind.Gpt => "codex ",
+        TerminalKind.Gemini => "gemini ",
+        _ => "✳ "
+    };
+
+    private static string KindName(TerminalKind k) => k switch
+    {
+        TerminalKind.Gpt => "GPT",
+        TerminalKind.Gemini => "Gemini",
+        _ => "Claude"
+    };
+
+    /// <summary>작업 세트·config의 종류 문자열("Gpt"/"Gemini"/그 외=Claude)을 종류로.</summary>
+    private static TerminalKind ParseCliKind(string? s) =>
+        string.Equals(s, "Gpt", StringComparison.OrdinalIgnoreCase) ? TerminalKind.Gpt
+        : string.Equals(s, "Gemini", StringComparison.OrdinalIgnoreCase) ? TerminalKind.Gemini
+        : TerminalKind.Claude;
+
     /// <summary>
-    /// 새 프로젝트: 작업 폴더 아래에 새 폴더를 만들고 고른 CLI(Claude/GPT)로 새 세션을 띄운다.
+    /// 새 프로젝트: 작업 폴더 아래에 새 폴더를 만들고 고른 CLI(Claude/GPT/Gemini)로 새 세션을 띄운다.
     /// 작업 폴더·CLI 선택은 기억해 다음 기본값으로 쓴다. 이미 있는 폴더면 그 폴더에서 시작할지 묻는다.
     /// </summary>
     private void NewProject()
     {
-        using var dlg = new NewProjectDialog(_projectsRoot, _newProjectGpt);
+        using var dlg = new NewProjectDialog(_projectsRoot, _newProjectKind);
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
         _projectsRoot = dlg.Root;
-        _newProjectGpt = dlg.UseGpt;
+        _newProjectKind = dlg.Kind;
         SaveConfig();
 
         string dir = Path.Combine(dlg.Root, dlg.ProjectName);
@@ -1816,10 +1873,10 @@ public sealed class MainForm : Form
         }
 
         // 제목은 세션 이름(폴더명)과 같게 — 재실행 복원이 제목으로 세션을 찾는다
-        string cmd = dlg.UseGpt ? _gptNewCmd : "claude";
-        string title = (dlg.UseGpt ? "codex " : "✳ ") + dlg.ProjectName.Replace("\"", "");
+        string cmd = NewCmdFor(dlg.Kind);
+        string title = KindPrefix(dlg.Kind) + dlg.ProjectName.Replace("\"", "");
         SetStatus(ClaudeSessionService.LaunchCommand(dir, cmd, out string err, title)
-            ? $"새 프로젝트 {(existed ? "열기" : "만들기")}: {dir} — {(dlg.UseGpt ? "GPT" : "Claude")} 세션 시작"
+            ? $"새 프로젝트 {(existed ? "열기" : "만들기")}: {dir} — {KindName(dlg.Kind)} 세션 시작"
             : $"새 프로젝트 세션 시작 실패: {err}");
     }
 
@@ -1837,8 +1894,8 @@ public sealed class MainForm : Form
         foreach (var s in sel)
         {
             // 종류별 새 세션 명령. Claude는 WT 탭 제목을 "✳ <이름>"으로 고정(세션 배지/rename 없음).
-            string cmd = s.Kind == TerminalKind.Gpt ? _gptNewCmd : "claude";
-            string title = (s.Kind == TerminalKind.Gpt ? "codex " : "✳ ") + SessionWindowTitle(s);
+            string cmd = NewCmdFor(s.Kind);
+            string title = KindPrefix(s.Kind) + SessionWindowTitle(s);
             if (ClaudeSessionService.LaunchCommand(s.Cwd, cmd, out string err, title)) ok++; else lastErr = err;
         }
 
@@ -1908,11 +1965,11 @@ public sealed class MainForm : Form
             .ToList();
         if (targets.Count == 0) { SetStatus("삭제할 세션 기록을 찾을 수 없습니다."); return; }
 
-        int folderCount = sel.Count(s => s.Kind != TerminalKind.Gpt);
-        int fileCount = sel.Count(s => s.Kind == TerminalKind.Gpt);
+        int folderCount = sel.Count(s => s.Kind is not (TerminalKind.Gpt or TerminalKind.Gemini));
+        int fileCount = sel.Count(s => s.Kind is TerminalKind.Gpt or TerminalKind.Gemini);
         string what = folderCount > 0 && fileCount > 0
-            ? $"Claude 세션 저장폴더 {folderCount}개와 GPT 세션 파일 {fileCount}개"
-            : folderCount > 0 ? $"Claude 세션 저장폴더 {folderCount}개" : $"GPT 세션 파일 {fileCount}개";
+            ? $"Claude 세션 저장폴더 {folderCount}개와 GPT·Gemini 세션 파일 {fileCount}개"
+            : folderCount > 0 ? $"Claude 세션 저장폴더 {folderCount}개" : $"GPT·Gemini 세션 파일 {fileCount}개";
 
         string preview = string.Join("\n", targets.Take(10));
         if (targets.Count > 10) preview += $"\n… 외 {targets.Count - 10}개";
@@ -2000,7 +2057,7 @@ public sealed class MainForm : Form
         _config.SetBool("MinimizeExcluded", _minimizeExcluded);
         _config.SetBool("RestoreOnStart", _restoreOnStart);
         _config.SetString("ProjectsRoot", _projectsRoot);
-        _config.SetString("NewProjectKind", _newProjectGpt ? "Gpt" : "Claude");
+        _config.SetString("NewProjectKind", _newProjectKind.ToString());
         _config.SetBool("WatchMode", _watchMode);
         _config.SetBool("SingleThird", _singleThird);
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
@@ -2018,6 +2075,8 @@ public sealed class MainForm : Form
         _config.SetString("GptSessionsDir", _gptSessionsDir);   // GPT 세션 폴더(빈값=~/.codex/sessions)
         _config.SetString("GptResumeCmd", _gptResumeCmd);       // GPT 이어서 복구 명령
         _config.SetString("GptNewCmd", _gptNewCmd);             // GPT 새 세션 명령
+        _config.SetString("GeminiResumeCmd", _geminiResumeCmd); // Gemini 이어서 복구 명령({id}=세션 UUID)
+        _config.SetString("GeminiNewCmd", _geminiNewCmd);       // Gemini 새 세션 명령
 
         try { _config.Save(); }
         catch (Exception ex) { SetStatus($"config.env 저장 실패: {ex.Message}"); }
@@ -2036,7 +2095,7 @@ public sealed class MainForm : Form
             _minimizeExcluded = _config.GetBool("MinimizeExcluded", true);
             _restoreOnStart = _config.GetBool("RestoreOnStart", true);
             _projectsRoot = _config.GetString("ProjectsRoot") ?? string.Empty;
-            _newProjectGpt = string.Equals(_config.GetString("NewProjectKind"), "Gpt", StringComparison.OrdinalIgnoreCase);
+            _newProjectKind = ParseCliKind(_config.GetString("NewProjectKind"));
             _chkLink.Checked = _linkAdjacent;
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
@@ -2209,7 +2268,7 @@ public sealed class MainForm : Form
     /// </summary>
     private static WorkSet BuildWorkSet(string name, List<WindowShot> shots, List<string> hidden)
     {
-        var ai = shots.Where(t => t.Kind is TerminalKind.Claude or TerminalKind.Gpt).ToList();
+        var ai = shots.Where(t => t.Kind is TerminalKind.Claude or TerminalKind.Gpt or TerminalKind.Gemini).ToList();
         List<ClaudeSession> recent;
         try { recent = ai.Count == 0 ? new List<ClaudeSession>() : ClaudeSessionService.GetRecent(ai.Count * 2 + 10, hidden); }
         catch (IOException) { recent = new List<ClaudeSession>(); }
@@ -2243,22 +2302,26 @@ public sealed class MainForm : Form
             {
                 w.Cwd = sess.Cwd;
                 w.SessionId = sess.SessionId;
-                w.SessionKind = sess.Kind == TerminalKind.Gpt ? "Gpt" : "Claude";
+                w.SessionKind = sess.Kind is TerminalKind.Gpt or TerminalKind.Gemini ? sess.Kind.ToString() : "Claude";
             }
             ws.Windows.Add(w);
         }
         return ws;
     }
 
-    /// <summary>창 제목에서 앞의 마커(✳ / codex / 스피너 문자)를 떼어 본문(세션 이름)만 남긴다.</summary>
+    /// <summary>창 제목에서 앞의 마커(✳ / codex / gemini / 스피너 문자)를 떼어 본문(세션 이름)만 남긴다.</summary>
     private static string TitleBody(string title)
     {
         string t = title.Trim();
+        // Gemini 자체 제목("◇  Ready (폴더)")은 괄호 안 폴더명이 본문
+        if (WindowDiscovery.IsGeminiTitle(t) && !t.StartsWith("gemini ", StringComparison.OrdinalIgnoreCase))
+            return WindowDiscovery.TitleBody(t);
         int sp = t.IndexOf(' ');
         if (sp <= 0) return t;
         char c = t[0];
         bool marker = c == '✳' || (c >= (char)0x2800 && c <= (char)0x28FF) || (c >= (char)0x25D0 && c <= (char)0x25D3)
-            || t.StartsWith("codex ", StringComparison.OrdinalIgnoreCase);
+            || t.StartsWith("codex ", StringComparison.OrdinalIgnoreCase)
+            || t.StartsWith("gemini ", StringComparison.OrdinalIgnoreCase);
         return marker ? t[(sp + 1)..].Trim() : t;
     }
 
@@ -2411,10 +2474,10 @@ public sealed class MainForm : Form
             _restorePending.RemoveAt(0);
             _restoreCandidate = 0;
             _restoreAwaitStartTick = Environment.TickCount;
-            bool gpt = string.Equals(_restoreAwaitSlot.SessionKind, "Gpt", StringComparison.OrdinalIgnoreCase);
-            var sess = new ClaudeSession { Cwd = _restoreAwaitSlot.Cwd, SessionId = _restoreAwaitSlot.SessionId, Kind = gpt ? TerminalKind.Gpt : TerminalKind.Claude };
-            string cmd = gpt ? BuildGptResumeCmd(sess) : "claude -c";
-            if (!ClaudeSessionService.LaunchCommand(_restoreAwaitSlot.Cwd, cmd, out string err, (gpt ? "codex " : "✳ ") + SessionWindowTitle(sess)))
+            var kind = ParseCliKind(_restoreAwaitSlot.SessionKind);
+            var sess = new ClaudeSession { Cwd = _restoreAwaitSlot.Cwd, SessionId = _restoreAwaitSlot.SessionId, Kind = kind };
+            string cmd = ResumeCmdFor(sess);
+            if (!ClaudeSessionService.LaunchCommand(_restoreAwaitSlot.Cwd, cmd, out string err, KindPrefix(kind) + SessionWindowTitle(sess)))
             {
                 _restoreLastErr = err;
                 _restoreMissed++;

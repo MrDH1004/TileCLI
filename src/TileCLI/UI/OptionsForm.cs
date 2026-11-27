@@ -56,7 +56,7 @@ public sealed class OptionsForm : Form
             _main.SetAutoStart(_chkAutoStart.Checked);
             _loading = true; _chkAutoStart.Checked = _main.AutoStartEnabled; _loading = false; // 실제 상태로 재동기화
         };
-        _chkCliOnly = new CheckBox { Text = "판별된 CLI(Claude·GPT) 창만 표시", AutoSize = true, Location = new Point(16, 78), Checked = _main.ClaudeGptOnly };
+        _chkCliOnly = new CheckBox { Text = "판별된 CLI(Claude·GPT·Gemini) 창만 표시", AutoSize = true, Location = new Point(16, 78), Checked = _main.ClaudeGptOnly };
         _chkCliOnly.CheckedChanged += (_, _) => { if (!_loading) _main.ClaudeGptOnly = _chkCliOnly.Checked; };
         _chkExcludeNonAi = new CheckBox { Text = "AI(Claude·GPT) 아닌 창은 정렬에서 제외", AutoSize = true, Location = new Point(16, 102), Checked = _main.ExcludeNonAiFromArrange };
         _chkExcludeNonAi.CheckedChanged += (_, _) => { if (!_loading) _main.ExcludeNonAiFromArrange = _chkExcludeNonAi.Checked; };

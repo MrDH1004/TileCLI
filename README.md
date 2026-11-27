@@ -2,7 +2,7 @@
 
 윈도우 데스크톱에 떠 있는 **터미널 창들을 골라 한 번에 자동 정렬**하는 단일 포터블 유틸리티.
 tmux/wmux 같은 "한 창 안 패널 분할"이 아니라 **실제 OS 창을 이동·리사이즈**해서 화면에 타일링한다.
-Claude Code·GPT CLI를 여러 개 띄워 쓰는 작업 환경을 한 번에 정돈하는 데 특화됐다.
+Claude Code·GPT CLI·Gemini CLI를 여러 개 띄워 쓰는 작업 환경을 한 번에 정돈하는 데 특화됐다.
 
 C# / .NET 9 / WinForms · 자체포함 단일 exe(win-x64). 창 제목에 버전 표시(`TileCLI vX.Y.Z`), **GitHub 릴리스 기반 자동 업데이트** 내장.
 
@@ -12,11 +12,11 @@ C# / .NET 9 / WinForms · 자체포함 단일 exe(win-x64). 창 제목에 버전
 
 ### 창 탐지 · 분류
 - **자동 탐지 + 수동 체크**: 실행 중인 터미널(Windows Terminal·cmd·PowerShell·Git Bash 등)을 콘솔 창 휴리스틱으로 폭넓게 탐지해 목록으로 보여주고, 체크박스로 정렬 대상을 고른다(아무것도 체크 안 하면 전체 대상).
-- **Claude / GPT / 서버 구분**: 각 터미널이 Claude(`claude`)·GPT CLI(`codex` 등)·일반 콘솔 중 무엇인지 "종류" 열에 표시(Claude=주황, GPT=초록 강조). 2단계 판별 —
-  1. **창 제목 접두 마커**(창별 정확): 제목이 `✳`로 시작→Claude, `codex`/`gpt`로 시작→GPT. Windows Terminal은 모든 창이 **한 프로세스**라 프로세스 트리로는 창별 구분이 안 되므로 제목으로 판별한다.
+- **Claude / GPT / Gemini / 서버 구분**: 각 터미널이 Claude(`claude`)·GPT CLI(`codex` 등)·Gemini CLI(`gemini`)·일반 콘솔 중 무엇인지 "종류" 열에 표시(Claude=주황, GPT=초록, Gemini=파랑 강조). 2단계 판별 —
+  1. **창 제목 접두 마커**(창별 정확): 제목이 `✳`로 시작→Claude, `codex`/`gpt`로 시작→GPT, Gemini 상태 아이콘(`◇  Ready (폴더)`·`✦  작업 중`·`✋  Action Required`·`⏲`) 또는 `gemini`로 시작→Gemini. Windows Terminal은 모든 창이 **한 프로세스**라 프로세스 트리로는 창별 구분이 안 되므로 제목으로 판별한다.
   2. **프로세스 트리**(폴백): 제목에 마커가 없으면 창의 프로세스 자손에 `claude`/`codex`가 있는지로 판별(cmd/conhost 등 프로세스 분리 창에 정확). 단, Windows Terminal 같은 **공유 프로세스 호스트**는 옆 창의 CLI가 오검출되지 않도록 폴백을 건너뛰고 일반 콘솔로 둔다.
   - 마커/프로세스명은 `config.env`(`ClaudeTitleMarkers`·`GptTitleMarkers`·`GptProcessNames`)에서 조정 가능.
-- **판별된 CLI만 표시(옵션)**: `판별된 CLI(Claude·GPT) 창만 표시`를 켜면 종류를 특정할 수 없는 일반 콘솔은 목록에서 숨긴다.
+- **판별된 CLI만 표시(옵션)**: `판별된 CLI(Claude·GPT·Gemini) 창만 표시`를 켜면 종류를 특정할 수 없는 일반 콘솔은 목록에서 숨긴다.
 - **드래그 순서 변경**: 목록에서 창을 드래그해 배치 순서를 바꾼다(위→아래 순서대로 타일 배치).
 
 ### 정렬 · 타일링
@@ -45,12 +45,12 @@ C# / .NET 9 / WinForms · 자체포함 단일 exe(win-x64). 창 제목에 버전
 ### 창 자동 배치(감시 모드)
 - 터미널 창이 **열리거나 닫히면** 마지막 방향으로 **자동 재배치**한다(정렬 그룹 `창 자동 배치` 체크). 저주파 폴링 방식이라 UI를 막지 않는다.
 
-### 최근 세션 복구/관리 (Claude · GPT)
-- `~/.claude/projects`(Claude)와 `~/.codex/sessions`(GPT CLI)를 읽어 최근 세션을 프로젝트(cwd) 단위로 표시한다(GPT는 초록으로 강조, 종류를 툴팁에 표기).
-- **이어하기**(또는 더블클릭): 종류에 맞는 명령으로 새 터미널을 띄운다 — Claude=`claude -c`, GPT=`codex --continue`. 상속된 `CLAUDECODE` 등 변수를 제거하고 컬러 힌트를 넣어 색상이 정상 출력된다.
+### 최근 세션 복구/관리 (Claude · GPT · Gemini)
+- `~/.claude/projects`(Claude)·`~/.codex/sessions`(GPT CLI)·`~/.gemini/tmp/*/chats`(Gemini CLI)를 읽어 최근 세션을 프로젝트(cwd) 단위로 표시한다(GPT는 초록, Gemini는 파랑 별 아이콘, 종류를 툴팁에 표기).
+- **이어하기**(또는 더블클릭): 종류에 맞는 명령으로 새 터미널을 띄운다 — Claude=`claude -c`, GPT=`codex resume <id>`, Gemini=`gemini --resume <id>`(id 없으면 `--resume latest`). 상속된 `CLAUDECODE` 등 변수를 제거하고 컬러 힌트를 넣어 색상이 정상 출력된다.
 - **세션 이름으로 터미널 제목 설정**: 세션을 열 때 WT 탭 제목을 세션 이름으로 고정한다(`--title` + `--suppressApplicationTitle`). 프로젝트가 git이면 원격 저장소 이름(`origin`)을, 아니면 폴더 이름을 쓴다. (Claude 창은 앞에 `✳` 마커를 붙여 재탐지 시 Claude로 정확히 분류된다.)
-- 우클릭 메뉴: `세션 이어하기`(이어서: Claude `claude -c` / GPT `codex --continue`) · `세션 새로 하기`(새로: Claude `claude` / GPT `codex`) · `탐색기에서 폴더 열기` · `앱에서 삭제`(목록 숨김, 파일 보존) · `세션 저장폴더 삭제`(세션 저장 폴더를 **휴지통**으로 이동, 코드 폴더는 안 건드림).
-- **새 프로젝트**(세션 패널 폴더+ 아이콘): 작업 폴더·프로젝트 이름·시작할 CLI(Claude/GPT)를 고르면 작업 폴더 아래에 새 폴더를 만들고 그 폴더에서 새 세션을 띄운다(Claude `claude`, GPT `GptNewCmd`). 이미 있는 폴더면 그 폴더에서 시작할지 묻는다. 작업 폴더·마지막 CLI 선택은 `config.env`(`ProjectsRoot`·`NewProjectKind`)에 기억.
+- 우클릭 메뉴: `세션 이어하기`(이어서: Claude `claude -c` / GPT `codex resume` / Gemini `gemini --resume`) · `세션 새로 하기`(새로: Claude `claude` / GPT `codex` / Gemini `gemini`) · `탐색기에서 폴더 열기` · `앱에서 삭제`(목록 숨김, 파일 보존) · `세션 저장폴더 삭제`(세션 저장 폴더를 **휴지통**으로 이동, 코드 폴더는 안 건드림).
+- **새 프로젝트**(세션 패널 폴더+ 아이콘): 작업 폴더·프로젝트 이름·시작할 CLI(Claude/GPT/Gemini)를 고르면 작업 폴더 아래에 새 폴더를 만들고 그 폴더에서 새 세션을 띄운다(Claude `claude`, GPT `GptNewCmd`, Gemini `GeminiNewCmd`). 이미 있는 폴더면 그 폴더에서 시작할지 묻는다. 작업 폴더·마지막 CLI 선택은 `config.env`(`ProjectsRoot`·`NewProjectKind`)에 기억.
 - 목록 다중 선택 지원. 목록의 창 제목은 주기적으로 실제 창 제목과 동기화된다.
 - 명령·폴더는 `config.env`(`GptSessionsDir`·`GptResumeCmd`·`GptNewCmd`)로 조정 가능.
 
@@ -128,7 +128,7 @@ TileCLI.exe --uidump     # 컨트롤 트리(그룹·버튼·라벨·위치) + �
 
 ## 설정 파일
 모두 exe 옆에 저장(쓰기 불가 시 `%APPDATA%\TileCLI\`로 폴백):
-- **`config.env`** (KEY=VALUE, 편집 가능): UI 옵션·최근 상태 — 트레이 최소화·인접 연동·창 자동 배치(감시)·걸쳐 배치·`판별된 CLI만 표시`(ClaudeGptOnly)·`AI 아닌 창 정렬 제외`(ExcludeNonAi), 최근 방향, **선택 모니터(DeviceName)**, 선택 프로파일 + 종류 판별 마커(`ClaudeTitleMarkers`·`GptTitleMarkers`·`GptProcessNames`) + GPT 세션 설정(`GptSessionsDir`·`GptResumeCmd`·`GptNewCmd`). 변경/정렬/종료 시 자동 저장, 시작 시 복원.
+- **`config.env`** (KEY=VALUE, 편집 가능): UI 옵션·최근 상태 — 트레이 최소화·인접 연동·창 자동 배치(감시)·걸쳐 배치·`판별된 CLI만 표시`(ClaudeGptOnly)·`AI 아닌 창 정렬 제외`(ExcludeNonAi), 최근 방향, **선택 모니터(DeviceName)**, 선택 프로파일 + 종류 판별 마커(`ClaudeTitleMarkers`·`GptTitleMarkers`·`GptProcessNames`) + GPT 세션 설정(`GptSessionsDir`·`GptResumeCmd`·`GptNewCmd`) + Gemini 명령(`GeminiResumeCmd`·`GeminiNewCmd`). 변경/정렬/종료 시 자동 저장, 시작 시 복원.
 - **`settings.json`** (JSON): 전역 단축키 바인딩 + 숨긴 세션 목록.
 - **`profiles.json`**: 이름 붙인 배치 프로파일.
 - **`worksets.json`**: 작업 세트(창 배치 + 세션 연결).

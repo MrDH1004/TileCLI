@@ -19,5 +19,8 @@ public enum TerminalKind
     Plain,
 
     /// <summary>AI CLI 창이지만 Claude/GPT를 특정하지 못함(작업 중 제목이 스피너로 바뀐 창).</summary>
-    Ai
+    Ai,
+
+    /// <summary>Gemini CLI가 실행 중인 창(제목 상태 아이콘 ◇/✦/✋/⏲ 또는 "gemini " 접두).</summary>
+    Gemini
 }
