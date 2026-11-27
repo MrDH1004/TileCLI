@@ -13,7 +13,9 @@ public enum IconKind
     // 작업 세트
     Save, Apply,
     // 세션 종류 표시
-    Claude, Gpt
+    Claude, Gpt,
+    // 새 프로젝트(폴더 + 플러스)
+    NewProject
 }
 
 /// <summary>
@@ -167,6 +169,16 @@ public static class Icons
                 using (var p = Round(r, s * 0.06f)) g.DrawPath(pen, p);
                 g.FillRectangle(brush, r.Left + r.Width * 0.55f, r.Top, r.Width * 0.16f, r.Height * 0.28f); // 쓰기방지 탭
                 g.DrawRectangle(pen, r.Left + r.Width * 0.26f, r.Top + r.Height * 0.52f, r.Width * 0.48f, r.Height * 0.30f); // 라벨
+                break;
+            }
+
+            case IconKind.NewProject: // 새 프로젝트: 폴더 + 플러스
+            {
+                g.DrawLines(pen, new[] {
+                    P(s, 0.14f, 0.30f), P(s, 0.38f, 0.30f), P(s, 0.46f, 0.38f), P(s, 0.86f, 0.38f),
+                    P(s, 0.86f, 0.80f), P(s, 0.14f, 0.80f), P(s, 0.14f, 0.30f) });
+                g.DrawLine(pen, s * 0.50f, s * 0.48f, s * 0.50f, s * 0.70f);
+                g.DrawLine(pen, s * 0.39f, s * 0.59f, s * 0.61f, s * 0.59f);
                 break;
             }
 

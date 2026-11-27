@@ -38,6 +38,8 @@ public sealed class MainForm : Form
     // GPT 세션 이어서 복구 명령. {id}는 세션 UUID로 치환된다(codex 0.146.0 기준 `codex resume <SESSION_ID>`).
     private string _gptResumeCmd = GptResumeDefault;
     private string _gptNewCmd = "codex";               // GPT 세션 새로 열기 명령
+    private string _projectsRoot = string.Empty;       // 새 프로젝트를 만들 작업 폴더(마지막 선택)
+    private bool _newProjectGpt;                       // 새 프로젝트 마지막 CLI 선택(true=GPT)
 
     private const string GptResumeDefault = "codex resume {id}";
     private const string GptResumeLast = "codex resume --last"; // 세션 id를 못 구했을 때 폴백
@@ -76,6 +78,12 @@ public sealed class MainForm : Form
     private readonly HashSet<IntPtr> _excluded = new();        // 수동으로 정렬 제외한 창(세션 기준)
     private bool _excludeNonAi = true;                         // 기본값: AI(Claude/GPT) 아닌 창을 정렬에서 자동 제외
     private bool _minimizeExcluded = true;                     // 제외 그룹에 새로 들어간 창은 최소화
+    private const string AutoWorkSetName = "(자동) 마지막 상태";  // 재실행 복원용 자동 작업 세트
+    private bool _restoreOnStart = true;                       // 재실행 시 마지막 세션·배치 복원
+    private bool _autoSaveReady;                               // 시작 복원이 끝난 뒤에만 자동 저장
+    private bool _sessionEnding;                               // Windows 종료 중: 터미널이 먼저 닫혀도 빈 상태로 덮어쓰지 않게 저장 동결
+    private string? _lastAutoJson;                             // 마지막으로 저장한 자동 세트(변화 없으면 안 씀)
+    private bool _autoSaveBusy, _autoSaveAgain;                // 백그라운드 자동 저장 진행 중 / 끝나면 다시
     private readonly HashSet<IntPtr> _arrangeExcluded = new(); // 실제 정렬 제외 집합(수동 ∪ AI아님옵션) — RefreshList에서 계산
     private readonly HashSet<IntPtr> _seenHandles = new();     // 목록에 한 번이라도 오른 창(새 창 판별용)
     private readonly HashSet<IntPtr> _autoParked = new();      // 새로 열린 일반 창이라 자동으로 최소화+제외한 창
@@ -169,6 +177,12 @@ public sealed class MainForm : Form
             NotifyMonitorFallback();
             _uiReady = true;
 
+            // 마지막 상태 복원은 창이 다 뜬 뒤 잠깐 있다가(자동 실행 직후 터미널·셸 준비 시간)
+            var restoreDelay = new System.Windows.Forms.Timer { Interval = 1500 };
+            restoreDelay.Tick += (_, _) => { restoreDelay.Stop(); restoreDelay.Dispose(); RestoreLastState(); };
+            restoreDelay.Start();
+            SystemEvents.SessionEnding += OnSessionEnding;
+
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
             // 핸들 생성 후 전역 단축키 등록(요구 3)
@@ -196,6 +210,7 @@ public sealed class MainForm : Form
         FormClosed += (_, _) =>
         {
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            SystemEvents.SessionEnding -= OnSessionEnding;
             _hotkeys?.UnregisterAll();
             _groupTracker.Dispose();
             _watcher.Dispose();
@@ -221,6 +236,7 @@ public sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         SaveConfig(); // 닫힘/숨김 직전 상태 저장(강제종료 대비)
+        AutoSaveState(sync: true);
 
         // 사용자가 X/Alt+F4로 닫을 때만 트레이로 숨김. 완전 종료·OS 종료는 그대로 진행.
         if (!_reallyExit && _minimizeToTray && e.CloseReason == CloseReason.UserClosing)
@@ -230,6 +246,15 @@ public sealed class MainForm : Form
             return;
         }
         base.OnFormClosing(e);
+    }
+
+    /// <summary>Windows 로그오프/종료: 터미널이 아직 열려 있을 때 마지막 상태를 저장하고 이후 저장은 막는다.</summary>
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e)
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { Invoke(new Action(() => OnSessionEnding(sender, e))); return; }
+        AutoSaveState(sync: true);
+        _sessionEnding = true;
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -397,6 +422,20 @@ public sealed class MainForm : Form
             SaveConfig();
             int n = value ? MinimizeWindows(_arrangeExcluded) : 0;
             SetStatus(value ? $"제외 항목 자동 최소화 켬 — 지금 제외된 창 {n}개 최소화." : "제외 항목 자동 최소화 끔.");
+        }
+    }
+
+    /// <summary>옵션 창용: 재실행 시 마지막으로 열려 있던 세션·배치를 복원(끄면 자동 저장도 멈춤).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool RestoreOnStart
+    {
+        get => _restoreOnStart;
+        set
+        {
+            _restoreOnStart = value;
+            SaveConfig();
+            AutoSaveState();
+            SetStatus(value ? "재실행 시 세션·배치 복원 켬." : "재실행 시 세션·배치 복원 끔.");
         }
     }
 
@@ -846,6 +885,7 @@ public sealed class MainForm : Form
         var bar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
         bar.Controls.Add(new Label { Text = "최근 세션", AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Padding = new Padding(2, 8, 8, 0), Tag = "gold" });
         bar.Controls.Add(MakeIconButton(IconKind.OpenNew, 38, (_, _) => ResumeSelectedSessions(), "선택 세션 이어서 복구 (Claude=claude -c / GPT=codex, 새 터미널)"));
+        bar.Controls.Add(MakeIconButton(IconKind.NewProject, 38, (_, _) => NewProject(), "새 프로젝트 — 작업 폴더에 새 폴더를 만들고 Claude/GPT 세션 시작"));
         bar.Controls.Add(MakeIconButton(IconKind.Refresh, 38, (_, _) => RefreshSessions(), "최근 클로드 세션 목록 새로고침"));
         // 삭제 드롭다운(앱에서 삭제 / 저장폴더 삭제)
         var btnDelete = MakeIconButton(IconKind.Delete, 38, null, "선택 세션 삭제 — 앱에서 숨김 / 세션 기록 휴지통");
@@ -1646,6 +1686,7 @@ public sealed class MainForm : Form
 
         SaveConfig(); // 최근 사용 방향/간격/걸쳐배치/모니터 기록
         RefreshList();
+        AutoSaveState();
         SetStatus(third
             ? $"⅓ 폭 배치: {applied}/{targets.Count}개, 칸 폭 {cells[0].Width} (오른쪽부터)."
             : $"{DirName(direction)} 정렬: {applied}/{targets.Count}개 배치 (영역 {area.Width}x{area.Height}).");
@@ -1675,6 +1716,7 @@ public sealed class MainForm : Form
             if (TilingEngine.MoveWindowVisible(targets[i], cells[i % cells.Count])) applied++;
 
         RefreshList();
+        AutoSaveState();
         SetStatus($"격자(바둑판) {dim}×{dim}: {applied}/{targets.Count}개 (셀 {cells[0].Width}x{cells[0].Height}).");
     }
 
@@ -1749,6 +1791,38 @@ public sealed class MainForm : Form
     }
 
     /// <summary>선택한 세션의 폴더에서 새 세션을 연다(Claude=claude, GPT=config 명령).</summary>
+    /// <summary>
+    /// 새 프로젝트: 작업 폴더 아래에 새 폴더를 만들고 고른 CLI(Claude/GPT)로 새 세션을 띄운다.
+    /// 작업 폴더·CLI 선택은 기억해 다음 기본값으로 쓴다. 이미 있는 폴더면 그 폴더에서 시작할지 묻는다.
+    /// </summary>
+    private void NewProject()
+    {
+        using var dlg = new NewProjectDialog(_projectsRoot, _newProjectGpt);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _projectsRoot = dlg.Root;
+        _newProjectGpt = dlg.UseGpt;
+        SaveConfig();
+
+        string dir = Path.Combine(dlg.Root, dlg.ProjectName);
+        bool existed = Directory.Exists(dir);
+        if (existed && MessageBox.Show(this, $"이미 있는 폴더입니다:\n{dir}\n\n이 폴더에서 세션을 시작할까요?",
+                "새 프로젝트", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            return;
+        if (!existed)
+        {
+            try { Directory.CreateDirectory(dir); }
+            catch (IOException e) { SetStatus($"폴더 만들기 실패: {e.Message}"); return; }
+            catch (UnauthorizedAccessException e) { SetStatus($"폴더 만들기 실패(권한): {e.Message}"); return; }
+        }
+
+        // 제목은 세션 이름(폴더명)과 같게 — 재실행 복원이 제목으로 세션을 찾는다
+        string cmd = dlg.UseGpt ? _gptNewCmd : "claude";
+        string title = (dlg.UseGpt ? "codex " : "✳ ") + dlg.ProjectName.Replace("\"", "");
+        SetStatus(ClaudeSessionService.LaunchCommand(dir, cmd, out string err, title)
+            ? $"새 프로젝트 {(existed ? "열기" : "만들기")}: {dir} — {(dlg.UseGpt ? "GPT" : "Claude")} 세션 시작"
+            : $"새 프로젝트 세션 시작 실패: {err}");
+    }
+
     private void LaunchNewSelectedSessions()
     {
         var sel = GetSelectedSessions();
@@ -1924,6 +1998,9 @@ public sealed class MainForm : Form
         _config.SetBool("ClaudeGptOnly", _claudeGptOnly);
         _config.SetBool("ExcludeNonAi", _excludeNonAi);
         _config.SetBool("MinimizeExcluded", _minimizeExcluded);
+        _config.SetBool("RestoreOnStart", _restoreOnStart);
+        _config.SetString("ProjectsRoot", _projectsRoot);
+        _config.SetString("NewProjectKind", _newProjectGpt ? "Gpt" : "Claude");
         _config.SetBool("WatchMode", _watchMode);
         _config.SetBool("SingleThird", _singleThird);
         _config.SetBool("SpanMonitors", _chkSpan.Checked);
@@ -1957,6 +2034,9 @@ public sealed class MainForm : Form
             _claudeGptOnly = _config.GetBool("ClaudeGptOnly", false);
             _excludeNonAi = _config.GetBool("ExcludeNonAi", true);
             _minimizeExcluded = _config.GetBool("MinimizeExcluded", true);
+            _restoreOnStart = _config.GetBool("RestoreOnStart", true);
+            _projectsRoot = _config.GetString("ProjectsRoot") ?? string.Empty;
+            _newProjectGpt = string.Equals(_config.GetString("NewProjectKind"), "Gpt", StringComparison.OrdinalIgnoreCase);
             _chkLink.Checked = _linkAdjacent;
             _watchMode = _config.GetBool("WatchMode", false);
             _chkWatch.Checked = _watchMode;
@@ -2082,28 +2162,7 @@ public sealed class MainForm : Form
         if (string.IsNullOrWhiteSpace(name)) { SetStatus("작업 세트 이름을 입력하세요."); return; }
         RefreshList(); // 최신 상태 기준
 
-        // 열린 클로드 창 수만큼 최근 세션을 근사 연결(창↔세션 정확 매칭은 WT 단일 프로세스 한계 → 최근성 기준).
-        int claudeCount = _terminals.Count(t => t.Kind == TerminalKind.Claude);
-        List<ClaudeSession> recent; // 작업 세트는 Claude 창↔Claude 세션만 연결(claude -c로 재실행)
-        try { recent = ClaudeSessionService.GetRecent(claudeCount * 2 + 5, _settings.HiddenSessions).Where(s => s.Kind == TerminalKind.Claude).Take(claudeCount).ToList(); }
-        catch { recent = new List<ClaudeSession>(); }
-        int ri = 0;
-
-        var ws = new WorkSet { Name = name };
-        foreach (var t in _terminals)
-        {
-            if (!TilingEngine.TryGetVisibleRect(t.Handle, out var r)) continue;
-            int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
-            string mon = _monitors.FirstOrDefault(m => m.Bounds.Contains(cx, cy))?.DeviceName ?? "";
-            var w = new WorkSetWindow { Title = t.Title, Kind = t.KindLabel, X = r.X, Y = r.Y, W = r.Width, H = r.Height, Monitor = mon };
-            if (t.Kind == TerminalKind.Claude && ri < recent.Count)   // 닫힌 뒤에도 되살릴 수 있게 세션 cwd 저장
-            {
-                w.Cwd = recent[ri].Cwd;
-                w.SessionId = recent[ri].SessionId;
-                ri++;
-            }
-            ws.Windows.Add(w);
-        }
+        var ws = CaptureWorkSet(name);
         if (ws.Windows.Count == 0) { SetStatus("저장할 터미널 창이 없습니다."); return; }
         int linked = ws.Windows.Count(x => !string.IsNullOrEmpty(x.Cwd));
 
@@ -2116,6 +2175,154 @@ public sealed class MainForm : Form
         _workSets = updated;
         RefreshWorkSets(name);
         SetStatus($"작업 세트 저장: '{name}' (창 {ws.Windows.Count}개, 세션 연결 {linked}개 — 닫혀도 복원 가능).");
+    }
+
+    /// <summary>
+    /// 지금 목록의 터미널 창(목록 순서)을 위치·모니터와 함께 작업 세트로 만든다. Claude/GPT 창은 최근 세션과 연결해
+    /// 창이 닫혀도 다시 띄울 수 있게 한다. 연결은 ① 창 제목 본문 = 세션 이름(TileCLI가 연 창은 "✳ 이름"/"codex 이름")
+    /// 정확 일치를 먼저, ② 남은 창은 같은 종류의 최근 세션 순으로 근사(WT 단일 프로세스라 창↔세션 정확 매칭 불가).
+    /// 최소화된 창은 위치가 없으므로 넣지 않는다.
+    /// </summary>
+    private WorkSet CaptureWorkSet(string name) =>
+        BuildWorkSet(name, SnapshotWindows(), _settings.HiddenSessions.ToList());
+
+    /// <summary>창 한 개의 저장용 스냅샷(UI 스레드에서 떠 두고, 세션 연결은 백그라운드에서).</summary>
+    private sealed record WindowShot(IntPtr Handle, string Title, TerminalKind Kind, string KindLabel, Rectangle Rect, string Monitor);
+
+    /// <summary>목록 순서대로 보이는 창의 위치·모니터를 뜬다. 최소화된 창은 위치가 없으므로 뺀다.</summary>
+    private List<WindowShot> SnapshotWindows()
+    {
+        var shots = new List<WindowShot>();
+        foreach (var t in _terminals)
+        {
+            if (!TilingEngine.TryGetVisibleRect(t.Handle, out var r) || NativeMethods.IsIconic(t.Handle)) continue;
+            int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+            string mon = _monitors.FirstOrDefault(m => m.Bounds.Contains(cx, cy))?.DeviceName ?? "";
+            shots.Add(new WindowShot(t.Handle, t.Title, t.Kind, t.KindLabel, r, mon));
+        }
+        return shots;
+    }
+
+    /// <summary>
+    /// 스냅샷 + 최근 세션 연결로 작업 세트를 만든다. 세션 폴더 스캔(수백 ms)이 있어 자동 저장은 백그라운드에서 부른다.
+    /// UI 상태를 건드리지 않으므로 어느 스레드에서 불러도 된다.
+    /// </summary>
+    private static WorkSet BuildWorkSet(string name, List<WindowShot> shots, List<string> hidden)
+    {
+        var ai = shots.Where(t => t.Kind is TerminalKind.Claude or TerminalKind.Gpt).ToList();
+        List<ClaudeSession> recent;
+        try { recent = ai.Count == 0 ? new List<ClaudeSession>() : ClaudeSessionService.GetRecent(ai.Count * 2 + 10, hidden); }
+        catch (IOException) { recent = new List<ClaudeSession>(); }
+        catch (UnauthorizedAccessException) { recent = new List<ClaudeSession>(); }
+
+        var names = new Dictionary<ClaudeSession, string>();
+        string NameOf(ClaudeSession x) => names.TryGetValue(x, out var v) ? v : names[x] = SessionWindowTitle(x);
+
+        var links = new Dictionary<IntPtr, ClaudeSession>();
+        var used = new HashSet<ClaudeSession>();
+        foreach (var t in ai) // ① 제목 = 세션 이름
+        {
+            string body = TitleBody(t.Title);
+            var hit = recent.FirstOrDefault(x => x.Kind == t.Kind && !used.Contains(x)
+                && string.Equals(NameOf(x), body, StringComparison.OrdinalIgnoreCase));
+            if (hit is null) continue;
+            links[t.Handle] = hit; used.Add(hit);
+        }
+        foreach (var t in ai.Where(t => !links.ContainsKey(t.Handle))) // ② 최근성 근사
+        {
+            var hit = recent.FirstOrDefault(x => x.Kind == t.Kind && !used.Contains(x));
+            if (hit is null) continue;
+            links[t.Handle] = hit; used.Add(hit);
+        }
+
+        var ws = new WorkSet { Name = name };
+        foreach (var t in shots)
+        {
+            var w = new WorkSetWindow { Title = t.Title, Kind = t.KindLabel, X = t.Rect.X, Y = t.Rect.Y, W = t.Rect.Width, H = t.Rect.Height, Monitor = t.Monitor };
+            if (links.TryGetValue(t.Handle, out var sess))   // 닫힌 뒤에도 되살릴 수 있게 세션 저장
+            {
+                w.Cwd = sess.Cwd;
+                w.SessionId = sess.SessionId;
+                w.SessionKind = sess.Kind == TerminalKind.Gpt ? "Gpt" : "Claude";
+            }
+            ws.Windows.Add(w);
+        }
+        return ws;
+    }
+
+    /// <summary>창 제목에서 앞의 마커(✳ / codex / 스피너 문자)를 떼어 본문(세션 이름)만 남긴다.</summary>
+    private static string TitleBody(string title)
+    {
+        string t = title.Trim();
+        int sp = t.IndexOf(' ');
+        if (sp <= 0) return t;
+        char c = t[0];
+        bool marker = c == '✳' || (c >= (char)0x2800 && c <= (char)0x28FF) || (c >= (char)0x25D0 && c <= (char)0x25D3)
+            || t.StartsWith("codex ", StringComparison.OrdinalIgnoreCase);
+        return marker ? t[(sp + 1)..].Trim() : t;
+    }
+
+    /// <summary>
+    /// 마지막 상태 자동 저장: 지금 열린 창·순서·위치·세션을 "(자동) 마지막 상태" 작업 세트로 남긴다.
+    /// 다음 실행 때 이 세트를 자동 적용해 닫힌 세션은 다시 띄우고 배치를 되살린다.
+    /// 시작 복원이 끝나기 전·복원 진행 중·Windows 종료 중에는 저장하지 않는다(부분 상태로 덮어쓰기 방지).
+    /// </summary>
+    private void AutoSaveState(bool sync = false)
+    {
+        if (!_restoreOnStart || !_autoSaveReady || _sessionEnding || _restorePending is not null) return;
+        if (_autoSaveBusy && !sync) { _autoSaveAgain = true; return; } // 진행 중이면 끝난 뒤 한 번 더
+
+        var shots = SnapshotWindows();
+        var hidden = _settings.HiddenSessions.ToList();
+        if (sync) { CommitAutoSave(BuildWorkSet(AutoWorkSetName, shots, hidden)); return; }
+
+        _autoSaveBusy = true;
+        Task.Run(() => BuildWorkSet(AutoWorkSetName, shots, hidden)).ContinueWith(t =>
+        {
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    _autoSaveBusy = false;
+                    if (t.Status == TaskStatus.RanToCompletion && !_sessionEnding) CommitAutoSave(t.Result);
+                    if (_autoSaveAgain) { _autoSaveAgain = false; AutoSaveState(); }
+                }));
+            }
+            catch (InvalidOperationException) { /* 폼이 이미 닫힘 */ }
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>자동 세트를 작업 세트 목록 맨 앞에 반영하고 파일에 쓴다(UI 스레드). 바뀐 게 없으면 쓰지 않는다.</summary>
+    private void CommitAutoSave(WorkSet ws)
+    {
+        string json = System.Text.Json.JsonSerializer.Serialize(ws);
+        if (json == _lastAutoJson) return;
+        var updated = _workSets.Where(w => !string.Equals(w.Name, AutoWorkSetName, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (ws.Windows.Count > 0) updated.Insert(0, ws);
+        try { _workSetStore.Save(updated); }
+        catch (IOException) { return; }
+        catch (UnauthorizedAccessException) { return; }
+        _lastAutoJson = json;
+        _workSets = updated;
+        RefreshWorkSets(_cboWorkSets.SelectedItem as string);
+    }
+
+    /// <summary>시작 복원: 저장된 마지막 상태를 적용(닫힌 세션 재실행 + 배치). 끝나면 자동 저장을 켠다.</summary>
+    private void RestoreLastState()
+    {
+        var ws = _workSets.FirstOrDefault(w => string.Equals(w.Name, AutoWorkSetName, StringComparison.OrdinalIgnoreCase));
+        if (!_restoreOnStart || ws is null || ws.Windows.Count == 0) { CompleteStartupRestore(); return; }
+        ApplyWorkSet(AutoWorkSetName);
+        if (_restorePending is null) CompleteStartupRestore(); // 재실행할 세션이 없었으면 바로 끝
+    }
+
+    /// <summary>복원 뒤: 목록 순서를 지금 화면 위치로 다시 세우고(이후 재배치가 복원된 배치를 따르게) 자동 저장 시작.</summary>
+    private void CompleteStartupRestore()
+    {
+        _windowOrder.Clear();
+        RefreshList();
+        _autoSaveReady = true;
+        AutoSaveState();
     }
 
     /// <summary>
@@ -2204,8 +2411,10 @@ public sealed class MainForm : Form
             _restorePending.RemoveAt(0);
             _restoreCandidate = 0;
             _restoreAwaitStartTick = Environment.TickCount;
-            var sess = new ClaudeSession { Cwd = _restoreAwaitSlot.Cwd, SessionId = _restoreAwaitSlot.SessionId };
-            if (!ClaudeSessionService.LaunchCommand(_restoreAwaitSlot.Cwd, "claude -c", out string err, "✳ " + SessionWindowTitle(sess)))
+            bool gpt = string.Equals(_restoreAwaitSlot.SessionKind, "Gpt", StringComparison.OrdinalIgnoreCase);
+            var sess = new ClaudeSession { Cwd = _restoreAwaitSlot.Cwd, SessionId = _restoreAwaitSlot.SessionId, Kind = gpt ? TerminalKind.Gpt : TerminalKind.Claude };
+            string cmd = gpt ? BuildGptResumeCmd(sess) : "claude -c";
+            if (!ClaudeSessionService.LaunchCommand(_restoreAwaitSlot.Cwd, cmd, out string err, (gpt ? "codex " : "✳ ") + SessionWindowTitle(sess)))
             {
                 _restoreLastErr = err;
                 _restoreMissed++;
@@ -2252,7 +2461,7 @@ public sealed class MainForm : Form
         _restoreAwaitSlot = null;
         _restoreCandidate = 0;
         _suppressWatchUntil = Environment.TickCount + 1500;
-        RefreshList();
+        CompleteStartupRestore(); // 목록 순서 = 복원된 화면 배치, 자동 저장 재개
         string tail = _restoreMissed == 0 ? "" : $" (실패/미출현 {_restoreMissed}개{(_restoreLastErr is null ? "" : $" — {_restoreLastErr}")})";
         SetStatus($"작업 세트 적용 완료: '{_restoreName}' — 이동 {_restorePlacedBase}개 + 재실행 배치 {_restoreDone}개{tail}.");
     }
@@ -2303,7 +2512,7 @@ public sealed class MainForm : Form
 
         RefreshList();                               // 집합이 바뀐 경우만 UI 갱신
         var allTargets = _terminals.Select(t => t.Handle).Where(h => !_arrangeExcluded.Contains(h)).ToList();
-        if (allTargets.Count == 0) return;
+        if (allTargets.Count == 0) { AutoSaveState(); return; }
         DoArrange(_currentDirection, allTargets);    // 전 창 대상(체크 무시) — 새 창 포함 재배치
         SetStatus($"감시 모드: 창 변화 감지 → 자동 배치({DirName(_currentDirection)}, {allTargets.Count}개).");
     }

@@ -26,4 +26,5 @@ public sealed class WorkSetWindow
     // 세션 연결(클로드 창만). 적용 시 창이 닫혀 있으면 이 세션을 claude -c로 재실행해 되살린다.
     public string Cwd { get; set; } = string.Empty;
     public string SessionId { get; set; } = string.Empty;
+    public string SessionKind { get; set; } = string.Empty; // "Gpt"면 codex resume, 그 외(빈 값 포함)는 claude -c
 }
